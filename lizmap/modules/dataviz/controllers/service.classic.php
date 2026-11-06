@@ -19,16 +19,6 @@ use LizmapDataviz\Plot\PlotFactory;
 class serviceCtrl extends jController
 {
     /**
-     * @var null|string the lizmap repository key
-     */
-    private $repository;
-
-    /**
-     * @var null|string the qgis project key
-     */
-    private $project;
-
-    /**
      * @var null|Project the Lizmap project
      */
     private $lizmapProject;
@@ -178,8 +168,6 @@ class serviceCtrl extends jController
                 $datavizConfig->getErrors(),
             );
         }
-        $this->repository = $repository;
-        $this->project = $project;
         $this->config = $config;
 
         // Redirect to method corresponding on REQUEST param

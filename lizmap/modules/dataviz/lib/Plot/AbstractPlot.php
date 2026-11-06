@@ -14,6 +14,7 @@
 namespace LizmapDataviz\Plot;
 
 use Lizmap\Project\Project;
+use Lizmap\Request\WFSAggregateRequest;
 use LizmapDataviz\Aggregation\AggregateFunction;
 use LizmapDataviz\Aggregation\GroupIndex;
 use LizmapDataviz\Aggregation\TraceAggregator;
@@ -49,6 +50,21 @@ abstract class AbstractPlot
 
     /** The feature colors are set in trace.marker.colors */
     protected const FEATURE_COLORS_MARKER_COLORS = 'colors';
+
+    /**
+     * The functions of the database aggregation, for each aggregate function.
+     */
+    private const DATABASE_FUNCTIONS = array(
+        AggregateFunction::SUM => WFSAggregateRequest::SUM,
+        AggregateFunction::COUNT => WFSAggregateRequest::COUNT,
+        AggregateFunction::AVG => WFSAggregateRequest::AVG,
+        AggregateFunction::MIN => WFSAggregateRequest::MIN,
+        AggregateFunction::MAX => WFSAggregateRequest::MAX,
+        AggregateFunction::FIRST => WFSAggregateRequest::FIRST,
+        AggregateFunction::LAST => WFSAggregateRequest::LAST,
+        AggregateFunction::STDDEV => WFSAggregateRequest::STDDEV,
+        AggregateFunction::MEDIAN => WFSAggregateRequest::MEDIAN,
+    );
 
     /** @var string The plot type */
     public const TYPE = '';
@@ -256,7 +272,11 @@ abstract class AbstractPlot
     }
 
     /**
-     * Fetch the layer features with WFS and build the plot traces.
+     * Fetch the layer data and build the plot traces.
+     *
+     * For aggregated plots, the values are aggregated by the database when
+     * possible (PostgreSQL layers). Otherwise, or if the database aggregation
+     * fails, all the features are requested with WFS and aggregated in PHP.
      *
      * @param string $expFilter a QGIS expression to filter the features
      *
@@ -269,7 +289,18 @@ abstract class AbstractPlot
             return false;
         }
 
-        // Request only the fields used by the plot. The features are
+        // Aggregate the values directly in the database when possible:
+        // only the aggregated values are transferred
+        if ($this->isAggregated()) {
+            $traces = $this->aggregateInDatabase($expFilter);
+            if ($traces !== null) {
+                $this->data = $traces;
+
+                return true;
+            }
+        }
+
+        // Otherwise, get all the features with WFS. Request only the fields used by the plot. The features are
         // sorted by X for plots displaying the X values in this order.
         $reader = new WfsFeatureReader($this->project, $this->layerId);
         $features = $reader->read(
@@ -359,6 +390,30 @@ abstract class AbstractPlot
     protected function getGroup(object $properties, mixed $x): mixed
     {
         return $x;
+    }
+
+    /**
+     * Get the fields grouping the features in the database aggregation.
+     *
+     * They must give the same groups as getGroup().
+     *
+     * @return list<string> the group fields, the X field by default
+     */
+    protected function getGroupFields(): array
+    {
+        return array($this->xFields[0]);
+    }
+
+    /**
+     * Get the group from the values of the group fields returned by the database.
+     *
+     * @param list<mixed> $values the values of the fields given by getGroupFields()
+     *
+     * @return mixed the group value, as returned by getGroup()
+     */
+    protected function getGroupFromValues(array $values): mixed
+    {
+        return $values[0];
     }
 
     /**
@@ -758,27 +813,141 @@ abstract class AbstractPlot
             return array();
         }
 
+        // Get the aggregated values and colors of each trace
         $groupCount = $groups->count();
-        $groupValues = $groups->values();
-
-        // Create the traces with the aggregated values of the groups
-        $traces = array();
+        $values = array();
+        $colors = array();
         foreach ($traceFields as $i => $fields) {
-            $trace = $this->createTrace($i, $fields['y']);
-            $colors = $this->setAggregatedValues(
-                $trace,
-                $groupValues,
-                $aggregators[$i]->results($groupCount),
-                $aggregators[$i]->colors($groupCount),
-            );
+            $values[$i] = $aggregators[$i]->results($groupCount);
+            $colors[$i] = $aggregators[$i]->colors($groupCount);
             // Free the aggregator memory as soon as possible
             $aggregators[$i] = null;
+        }
 
-            $this->applyColors($trace, $colors);
+        return $this->createAggregatedTraces($groups->values(), $values, $colors);
+    }
+
+    /**
+     * Aggregate the values in the database, without getting the features.
+     *
+     * The same features as with WFS are aggregated: same filters, including
+     * the filter by login and by polygon, and same groups and functions.
+     *
+     * @param string $expFilter a QGIS expression to filter the features
+     *
+     * @return null|array the traces, null if the aggregation can not be done
+     *                    by the database (not a PostgreSQL layer, error...)
+     */
+    private function aggregateInDatabase(string $expFilter): ?array
+    {
+        /** @var null|\qgisVectorLayer $layer */
+        $layer = $this->project->getLayer($this->layerId);
+        if (!$layer) {
+            return null;
+        }
+        $traceFields = $this->getTraceFields();
+
+        // The aggregate function of each trace, then the first color of each
+        // group if the trace has a color field displayed by the plot type.
+        // Keep the index of the aggregates of each trace.
+        $aggregates = array();
+        $valueIndexes = array();
+        $colorIndexes = array();
+        foreach ($traceFields as $i => $fields) {
+            $valueIndexes[$i] = count($aggregates);
+            $aggregates[] = array(self::DATABASE_FUNCTIONS[$this->aggregation], $fields['y']);
+
+            $colorIndexes[$i] = null;
+            if ($fields['color'] !== null && static::FEATURE_COLORS !== self::FEATURE_COLORS_NONE) {
+                $colorIndexes[$i] = count($aggregates);
+                $aggregates[] = array(WFSAggregateRequest::FIRST_NOT_EMPTY, $fields['color']);
+            }
+        }
+
+        // Select the features as the WFS request does
+        $params = array('TYPENAME' => $layer->getWfsTypeName());
+        if ($expFilter !== '') {
+            $params['EXP_FILTER'] = $expFilter;
+        }
+        $request = new WFSAggregateRequest($this->project, $params, \lizmap::getServices());
+
+        // Group by X (and parent for sunburst), ignoring the features
+        // without X value. Keep the order of the WFS request.
+        $rows = $request->aggregate(
+            $this->getGroupFields(),
+            $aggregates,
+            static::SORT_BY_X ? WFSAggregateRequest::ORDER_BY_GROUP : WFSAggregateRequest::ORDER_BY_FIRST_FEATURE,
+            array($this->xFields[0]),
+        );
+        if ($rows === null) {
+            $this->logDebug('the aggregation is not done by the database: '.$request->getFailureReason());
+
+            return null;
+        }
+        $this->logDebug('the aggregation is done by the database');
+
+        // No feature: no trace
+        if (count($rows) === 0) {
+            return array();
+        }
+
+        // Read the groups and, for each trace, the values and the colors
+        $groups = array();
+        $values = array();
+        $colors = array();
+        foreach ($rows as list($groupValues, $aggregatedValues)) {
+            $groups[] = $this->getGroupFromValues($groupValues);
+            foreach ($traceFields as $i => $fields) {
+                $values[$i][] = $aggregatedValues[$valueIndexes[$i]];
+                $colors[$i][] = $colorIndexes[$i] !== null ? $aggregatedValues[$colorIndexes[$i]] : null;
+            }
+        }
+
+        // No color at all for a trace: keep the trace color,
+        // as with the aggregation in PHP
+        foreach ($colors as $i => $traceColors) {
+            if (count(array_filter($traceColors, fn ($color) => $color !== null)) === 0) {
+                $colors[$i] = null;
+            }
+        }
+
+        return $this->createAggregatedTraces($groups, $values, $colors);
+    }
+
+    /**
+     * Create the traces from the aggregated values of the groups.
+     *
+     * Used by the aggregation in PHP and in the database.
+     *
+     * @param list<mixed>             $groups the groups, as returned by getGroup()
+     * @param array<int, list<mixed>> $values for each trace, the aggregated value of each group
+     * @param array<int, null|array>  $colors for each trace, the color of each group, null if none
+     *
+     * @return array the traces
+     */
+    private function createAggregatedTraces(array $groups, array $values, array $colors): array
+    {
+        $traces = array();
+        foreach ($this->getTraceFields() as $i => $fields) {
+            $trace = $this->createTrace($i, $fields['y']);
+            $traceColors = $this->setAggregatedValues($trace, $groups, $values[$i], $colors[$i]);
+            $this->applyColors($trace, $traceColors);
             $traces[] = $this->finalizeTrace($trace);
         }
 
         return $traces;
+    }
+
+    /**
+     * Log a message in the Lizmap admin log, in debug mode only.
+     *
+     * @param string $message the message
+     */
+    private function logDebug(string $message): void
+    {
+        if (\lizmap::getServices()->debugMode == '1') {
+            \jLog::log('Dataviz - '.$this->getLayerId().' - '.$message, 'lizmapadmin');
+        }
     }
 
     /**

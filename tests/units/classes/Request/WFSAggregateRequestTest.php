@@ -1,0 +1,253 @@
+<?php
+
+use Lizmap\Request\WFSAggregateRequest;
+use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\TestCase;
+
+/**
+ * Tests of the aggregation of the features of a PostgreSQL layer in the
+ * database: validation of the requested fields and functions, which protects
+ * the SQL query, and the SQL query itself.
+ *
+ * The SQL query is executed by the end-to-end tests of the dataviz API.
+ *
+ * @internal
+ *
+ * @coversNothing
+ */
+class WFSAggregateRequestTest extends TestCase
+{
+    /**
+     * Get the layer fields published in WFS, like the jDb field properties.
+     *
+     * Only the name and the type (PostgreSQL type name without size) are used.
+     *
+     * @return array<string, object> the fields: an integer key, a text category,
+     *                               a float value, a text color and an interval
+     */
+    private static function getFields(): array
+    {
+        $fields = array();
+        foreach (array('id' => 'int', 'category' => 'varchar', 'value' => 'float', 'color' => 'text', 'duration' => 'interval') as $name => $type) {
+            $fields[$name] = (object) array('name' => $name, 'type' => $type);
+        }
+
+        return $fields;
+    }
+
+    /**
+     * Create the request for a table with the primary key "id".
+     *
+     * @return WFSAggregateRequestForTests the request
+     */
+    private static function getRequest(): WFSAggregateRequestForTests
+    {
+        $request = new WFSAggregateRequestForTests();
+        $request->appContext = new ContextForTests();
+        $request->datasource = (object) array(
+            'key' => 'id',
+            'table' => '"schema"."table"',
+        );
+
+        return $request;
+    }
+
+    /**
+     * Get valid and invalid aggregations.
+     *
+     * @return array<string, array> the group fields, the aggregates, the not null fields
+     *                              and the expected failure reason (null if valid)
+     */
+    public static function getValidationData(): array
+    {
+        return array(
+            'valid' => array(
+                array('category'),
+                array(array('sum', 'value'), array('count', null), array('first_not_empty', 'color')),
+                array('category'),
+                null,
+            ),
+            // The count does not need a field, first and last accept any field
+            'count and first of text fields' => array(
+                array('category'),
+                array(array('count', null), array('first', 'color'), array('last', 'category')),
+                array(),
+                null,
+            ),
+            'no group field' => array(
+                array(),
+                array(array('count', null)),
+                array(),
+                'no group field',
+            ),
+            // Fields not published in WFS, or field names trying to inject SQL
+            'unpublished group field' => array(
+                array('secret'),
+                array(array('count', null)),
+                array(),
+                'the field "secret" is not available',
+            ),
+            'injection in group field' => array(
+                array('category" FROM pg_user; --'),
+                array(array('count', null)),
+                array(),
+                'the field "category" FROM pg_user; --" is not available',
+            ),
+            'unpublished aggregated field' => array(
+                array('category'),
+                array(array('sum', 'secret')),
+                array(),
+                'the field "secret" is not available',
+            ),
+            'unpublished not null field' => array(
+                array('category'),
+                array(array('count', null)),
+                array('secret'),
+                'the field "secret" is not available',
+            ),
+            'unknown function' => array(
+                array('category'),
+                array(array('pg_sleep', 'value')),
+                array(),
+                'unknown aggregate function "pg_sleep"',
+            ),
+            // The numeric functions need a numeric field: the PHP aggregation
+            // is used for the numeric strings of text fields
+            'sum of a text field' => array(
+                array('category'),
+                array(array('sum', 'color')),
+                array(),
+                'the field "color" is not numeric',
+            ),
+            'median of an interval' => array(
+                array('category'),
+                array(array('median', 'duration')),
+                array(),
+                'the field "duration" is not numeric',
+            ),
+        );
+    }
+
+    /**
+     * Test the validation of the fields and functions of the aggregation.
+     *
+     * @param array       $groupFields    the fields to group by
+     * @param array       $aggregates     the aggregates: function and field
+     * @param array       $notNullFields  the group fields which must not be null
+     * @param null|string $expectedReason the expected failure reason, null if valid
+     */
+    #[DataProvider('getValidationData')]
+    public function testValidateAggregation(array $groupFields, array $aggregates, array $notNullFields, ?string $expectedReason): void
+    {
+        $request = self::getRequest();
+
+        $valid = $request->validateAggregationForTests(self::getFields(), $groupFields, $aggregates, $notNullFields);
+
+        $this->assertSame($expectedReason === null, $valid);
+        $this->assertSame($expectedReason, $request->getFailureReason());
+    }
+
+    /**
+     * Get the aggregate functions and their SQL expression.
+     *
+     * @return array<string, array{0: string, 1: ?string, 2: string}> the function,
+     *                                                                the field and the expected SQL
+     */
+    public static function getAggregateSqlData(): array
+    {
+        return array(
+            'count' => array('count', null, 'count(*)'),
+            // 0 instead of null, as the aggregation in PHP
+            'sum' => array('sum', 'value', 'coalesce(sum("value"), 0)'),
+            'avg' => array('avg', 'value', 'avg("value")'),
+            'min' => array('min', 'value', 'min("value")'),
+            'max' => array('max', 'value', 'max("value")'),
+            'stddev' => array('stddev', 'value', 'stddev_pop("value")'),
+            'median' => array('median', 'value', 'percentile_cont(0.5) WITHIN GROUP (ORDER BY "value"::double precision)'),
+            // First and last in the order of the primary key
+            'first' => array('first', 'value', '(array_agg("value" ORDER BY "lizmap_feature_order"))[1]'),
+            'last' => array('last', 'value', '(array_agg("value" ORDER BY "lizmap_feature_order" DESC))[1]'),
+            'first not empty' => array(
+                'first_not_empty',
+                'color',
+                '(array_agg("color" ORDER BY "lizmap_feature_order") FILTER (WHERE "color" IS NOT NULL AND "color"::text <> \'\'))[1]',
+            ),
+        );
+    }
+
+    /**
+     * Test the SQL expression of each aggregate function.
+     *
+     * @param string      $function    the aggregate function
+     * @param null|string $field       the field
+     * @param string      $expectedSql the expected SQL expression
+     */
+    #[DataProvider('getAggregateSqlData')]
+    public function testGetAggregateSql(string $function, ?string $field, string $expectedSql): void
+    {
+        $sql = self::getRequest()->getAggregateSqlForTests(new jDbConnectionForTests(), $function, $field);
+
+        $this->assertSame($expectedSql, $sql);
+    }
+
+    /**
+     * Test the SQL query grouping the features.
+     */
+    public function testBuildAggregateSql(): void
+    {
+        $sql = self::getRequest()->buildAggregateSqlForTests(
+            new jDbConnectionForTests(),
+            ' WHERE True AND ( "value" > 10 )',
+            array('parent', 'category'),
+            array(array('sum', 'value'), array('first_not_empty', 'color')),
+            WFSAggregateRequest::ORDER_BY_FIRST_FEATURE,
+            array('category'),
+        );
+        // Compare without the indentation
+        $sql = preg_replace('/\s+/', ' ', trim($sql));
+
+        // The features: the selected fields, without duplicate, ordered by primary key,
+        // filtered by the WHERE clause, without null category
+        $this->assertStringContainsString(
+            'WITH source AS ( SELECT "parent", "category", "value", "color",'
+            .' row_number() OVER (ORDER BY "id") AS "lizmap_feature_order"'
+            .' FROM "schema"."table" WHERE True AND ( "value" > 10 ) AND "category" IS NOT NULL )',
+            $sql
+        );
+
+        // The groups, with the aggregated values and the position of their first feature
+        $this->assertStringContainsString(
+            'grouped AS ( SELECT "parent" AS "g0", "category" AS "g1",'
+            .' coalesce(sum("value"), 0) AS "a0",',
+            $sql
+        );
+        $this->assertStringContainsString('min("lizmap_feature_order") AS "lizmap_group_order" FROM source GROUP BY 1, 2 )', $sql);
+
+        // One JSON array of the groups, in the order of their first feature
+        $this->assertStringContainsString(
+            'SELECT json_agg( json_build_array( json_build_array("g0", "g1"), json_build_array("a0", "a1") )'
+            .' ORDER BY "lizmap_group_order" )::text AS groups FROM grouped',
+            $sql
+        );
+    }
+
+    /**
+     * Test the order of the groups by their values.
+     */
+    public function testBuildAggregateSqlOrderByGroup(): void
+    {
+        $sql = self::getRequest()->buildAggregateSqlForTests(
+            new jDbConnectionForTests(),
+            ' WHERE True',
+            array('category'),
+            array(array('count', null)),
+            WFSAggregateRequest::ORDER_BY_GROUP,
+        );
+        $sql = preg_replace('/\s+/', ' ', trim($sql));
+
+        $this->assertStringContainsString('ORDER BY "g0" )::text AS groups', $sql);
+
+        // Without not null field, no condition is added
+        $this->assertStringContainsString('FROM "schema"."table" WHERE True )', $sql);
+    }
+}

@@ -383,3 +383,150 @@ test.describe('Dataviz API tests with Basic Auth',
             expect(errors).toHaveProperty('error_code', 'layer_not_found');
         });
     });
+
+/**
+ * Get a plot from a plot configuration given to the dataviz API,
+ * with a basic authentication.
+ *
+ * The plot groups the features by the X field and counts them,
+ * with a second trace summing the Y field.
+ * @param {import('@playwright/test').APIRequestContext} request The request context
+ * @param {string} login    The user login, the password is "admin" for all the test users
+ * @param {string} project  The project name
+ * @param {string} layerId  The layer identifier
+ * @param {string} xField   The field grouping the features
+ * @param {string} yField   The numeric field to sum
+ * @returns {Promise<object>} The plot JSON
+ */
+async function getAggregatedPlot(request, login, project, layerId, xField, yField) {
+    const response = await request.post(url, {
+        headers: {
+            authorization: 'Basic ' + btoa(`${login}:admin`),
+        },
+        data: {
+            repository: 'testsrepository',
+            project: project,
+            plot_config: {
+                type: 'bar',
+                title: 'Aggregation',
+                layerId: layerId,
+                x_field: xField,
+                aggregation: 'count',
+                traces: [
+                    { y_field: yField, color: '', colorfield: '', z_field: '' },
+                ],
+                display_legend: 'True',
+                stacked: 'False',
+                horizontal: 'False',
+                order: 0,
+            },
+        },
+    });
+    responseExpect(response).toBeJson();
+
+    return await response.json();
+}
+
+/**
+ * Get the features of a layer with a WFS GetFeature request,
+ * with a basic authentication.
+ * @param {import('@playwright/test').APIRequestContext} request The request context
+ * @param {string} login    The user login, the password is "admin" for all the test users
+ * @param {string} project  The project name
+ * @param {string} typeName The WFS type name of the layer
+ * @returns {Promise<Array<object>>} The GeoJSON features
+ */
+async function getWfsFeatures(request, login, project, typeName) {
+    const response = await request.get('/index.php/lizmap/service', {
+        headers: {
+            authorization: 'Basic ' + btoa(`${login}:admin`),
+        },
+        params: {
+            repository: 'testsrepository',
+            project: project,
+            SERVICE: 'WFS',
+            VERSION: '1.0.0',
+            REQUEST: 'GetFeature',
+            TYPENAME: typeName,
+            OUTPUTFORMAT: 'GeoJSON',
+            GEOMETRYNAME: 'none',
+        },
+    });
+    expect(response.ok()).toBeTruthy();
+
+    return (await response.json()).features;
+}
+
+/**
+ * Count the features by value of a field, ignoring the null values,
+ * as the dataviz aggregation does.
+ * @param {Array<object>} features The GeoJSON features
+ * @param {string}        field    The field grouping the features
+ * @returns {object} The number of features by value
+ */
+function countByValue(features, field) {
+    const counts = {};
+    for (const feature of features) {
+        const value = feature.properties[field];
+        if (value !== null) {
+            counts[value] = (counts[value] ?? 0) + 1;
+        }
+    }
+
+    return counts;
+}
+
+test.describe('Dataviz API - aggregation of PostgreSQL layers in the database',
+    {
+        tag: ['@requests', '@readonly'],
+    }, () => {
+
+        // For PostgreSQL layers, the aggregated values are computed by the
+        // database. The aggregated features must be exactly the ones the user
+        // can get with WFS: the filters by polygon and by login must be applied.
+
+        for (const login of ['admin', 'user_in_group_a', 'user_in_group_b']) {
+            test(`Filter by polygon is applied for ${login}`, async ({request}) => {
+                const project = 'filter_layer_data_by_polygon_for_groups';
+
+                // The bakeries visible by the user, and their number by name
+                const features = await getWfsFeatures(request, login, project, 'shop_bakery_pg');
+                const expectedCounts = countByValue(features, 'name');
+
+                // The dataviz count of bakeries by name
+                const json = await getAggregatedPlot(
+                    request, login, project, 'shop_bakery_pg_403084fe_041d_4ede_a2dc_cd9866a53623', 'name', 'id'
+                );
+
+                // No visible bakery: no trace
+                if (features.length === 0) {
+                    expect(json.data).toHaveLength(0);
+                    return;
+                }
+
+                // Same counts by name as the WFS features
+                const trace = json.data[0];
+                expect(trace).not.toHaveProperty('transforms');
+                const counts = Object.fromEntries(trace.x.map((name, i) => [name, trace.y[i]]));
+                expect(counts).toEqual(expectedCounts);
+            });
+
+            test(`Filter by login is applied for ${login}`, async ({request}) => {
+                const project = 'filter_layer_by_user';
+
+                // The features visible by the user, and their number by user field
+                const features = await getWfsFeatures(request, login, project, 'blue_filter_layer_by_user');
+                const expectedCounts = countByValue(features, 'user');
+
+                // The dataviz count of features by user field
+                const json = await getAggregatedPlot(
+                    request, login, project, 'filter_layer_by_user_8bd3128f_2cad_4121_b5f9_0b6f6118e2f0', 'user', 'gid'
+                );
+
+                // Same counts as the WFS features
+                const trace = json.data[0];
+                const counts = Object.fromEntries(trace.x.map((user, i) => [user, trace.y[i]]));
+                expect(counts).toEqual(expectedCounts);
+            });
+        }
+    });

@@ -102,6 +102,38 @@ class SunburstPlot extends AbstractPlot
     }
 
     /**
+     * Get the fields grouping the features in the database aggregation:
+     * the parent field if any, and the label field (X).
+     *
+     * @return list<string> the group fields
+     */
+    protected function getGroupFields(): array
+    {
+        $parentField = $this->getParentField();
+        if ($parentField === null) {
+            return array($this->xFields[0]);
+        }
+
+        return array($parentField, $this->xFields[0]);
+    }
+
+    /**
+     * Get the group (parent, label) from the values of the group fields.
+     *
+     * @param list<mixed> $values the values of the fields given by getGroupFields()
+     *
+     * @return array the parent (null if none) and the label
+     */
+    protected function getGroupFromValues(array $values): mixed
+    {
+        if (count($values) === 1) {
+            return array(null, $values[0]);
+        }
+
+        return array($values[0], $values[1]);
+    }
+
+    /**
      * Set the nodes: the root, the parents and the groups.
      *
      * The value of a parent is the sum of the values of its children,
