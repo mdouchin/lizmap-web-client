@@ -39,8 +39,11 @@ test.describe('Dataviz API tests',
                     "Lavérune", "Juvignac", "Le Crès", "Castelnau-le-Lez"
                 ])
             );
+            // Values are aggregated server side: one polygon per municipality
+            expect(data[0]).not.toHaveProperty('transforms');
+            expect(data[0].x).toHaveLength(10);
             expect(data[0]).toHaveProperty('y');
-            expect(data[0].y).toEqual(expect.arrayContaining([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]));
+            expect(data[0].y).toEqual([1, 1, 1, 1, 1, 1, 1, 1, 1, 1]);
 
             expect(json).toHaveProperty('layout')
         });
@@ -72,7 +75,7 @@ test.describe('Dataviz API tests',
                 ])
             );
             expect(data[0]).toHaveProperty('values');
-            expect(data[0].values).toEqual(expect.arrayContaining([4, 2, 6, 1, 2, 1, 2, 1, 4, 2]));
+            expect(data[0].values).toEqual([4, 2, 6, 1, 2, 1, 2, 1, 4, 2]);
 
             expect(json).toHaveProperty('layout')
         });
@@ -97,39 +100,27 @@ test.describe('Dataviz API tests',
             expect(data).toHaveLength(1);
             expect(data[0]).toHaveProperty('type', 'bar');
             expect(data[0]).toHaveProperty('orientation', 'h');
-            expect(data[0]).toHaveProperty('transforms');
-            expect(data[0].transforms).toEqual(
-                [
-                    {
-                        "type": "aggregate",
-                        "groups": "y",
-                        "aggregations": [
-                            {
-                                "target": "x",
-                                "func": "count",
-                                "enabled": true
-                            }
-                        ]
-                    }
-                ]
-            );
+            // Values are aggregated server side: count of bakeries per municipality
+            expect(data[0]).not.toHaveProperty('transforms');
             expect(data[0]).toHaveProperty('x');
-            expect(data[0].x).toEqual(
-                expect.arrayContaining([
-                    1, 16, 68, 69, 73, 79, 99, 102, 103, 119, 126, 140, 143,
-                    151, 155, 157, 158, 163, 168, 173, 174, 181, 195, 197, 199
-                ])
-            );
             expect(data[0]).toHaveProperty('y');
-            expect(data[0].y).toEqual(
-                expect.arrayContaining([
-                    "Grabels", "Grabels", "Montferrier-sur-Lez", "Lavérune", "Montpellier", "Montpellier",
-                    "Saint-Jean-de-Védas", "Grabels", "Clapiers", "Clapiers", "Montpellier", "Juvignac",
-                    "Castelnau-le-Lez", "Castelnau-le-Lez", "Grabels", "Grabels", "Le Crès", "Lattes",
-                    "Lattes", "Castelnau-le-Lez", "Castelnau-le-Lez", "Saint-Jean-de-Védas", "Montpellier",
-                    "Le Crès", "Grabels"
-                ])
+            expect(data[0].y).toHaveLength(10);
+            expect(data[0].x).toHaveLength(10);
+            const countByMunicipality = Object.fromEntries(
+                data[0].y.map((municipality, i) => [municipality, data[0].x[i]])
             );
+            expect(countByMunicipality).toEqual({
+                "Castelnau-le-Lez": 4,
+                "Clapiers": 2,
+                "Grabels": 6,
+                "Juvignac": 1,
+                "Lattes": 2,
+                "Lavérune": 1,
+                "Le Crès": 2,
+                "Montferrier-sur-Lez": 1,
+                "Montpellier": 4,
+                "Saint-Jean-de-Védas": 2,
+            });
 
             expect(json).toHaveProperty('layout')
         });
@@ -165,9 +156,10 @@ test.describe('Dataviz API tests JSON data filtered for plot in popup',
             expect(data).toHaveLength(1);
             expect(data[0]).toHaveProperty('type', 'bar');
             expect(data[0]).toHaveProperty('x');
-            expect(data[0].x).toEqual(expect.arrayContaining([5, 5, 5, 5]));
+            // Values are aggregated server side: 4 bakeries in polygon 5
+            expect(data[0].x).toEqual([5]);
             expect(data[0]).toHaveProperty('y');
-            expect(data[0].y).toEqual(expect.arrayContaining([73, 79, 126, 195]) );
+            expect(data[0].y).toEqual([4]);
 
             expect(json).toHaveProperty('layout')
         });
@@ -342,11 +334,11 @@ test.describe('Dataviz API tests with Basic Auth',
             expect(data[0]).toHaveProperty('type', 'bar');
             expect(data[0]).toHaveProperty('marker');
             expect(data[0].marker).toHaveProperty('color', 'cyan');
-            expect(data[0]).toHaveProperty('transforms');
-            expect(data[0].transforms).toHaveLength(1);
-            expect(data[0].transforms[0]).toHaveProperty('aggregations');
-            expect(data[0].transforms[0].aggregations).toHaveLength(1);
-            expect(data[0].transforms[0].aggregations[0]).toHaveProperty('func', 'count');
+            // Values are aggregated server side: count of bakeries per district
+            expect(data[0]).not.toHaveProperty('transforms');
+            expect(data[0].x).toHaveLength(10);
+            expect(data[0].y).toHaveLength(10);
+            expect(data[0].y.reduce((total, count) => total + count, 0)).toBe(25);
         });
 
         test('Error with wrong layer ID', async ({request}) => {

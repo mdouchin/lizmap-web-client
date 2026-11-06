@@ -4,6 +4,7 @@ use Lizmap\App\Checker;
 use Lizmap\Project\Project;
 use Lizmap\Project\UnknownLizmapProjectException;
 use Lizmap\Request\Proxy;
+use LizmapDataviz\Plot\PlotFactory;
 
 /**
  * PHP Dataviz service to get plot config.
@@ -230,8 +231,6 @@ class serviceCtrl extends jController
     protected function GetPlot()
     {
         // Get params
-        $repository = $this->repository;
-        $project = $this->project;
         $plot_id = $this->intParam('plot_id');
         $exp_filter = trim((string) $this->param('exp_filter'));
         $plotConfigParameter = $this->param('plot_config');
@@ -314,30 +313,8 @@ class serviceCtrl extends jController
         }
 
         // Create plot
-        jClasses::inc('dataviz~datavizPlot');
-
-        $type = $plotConfig['plot']['type'];
-        if ($type == 'scatter') {
-            $dplot = new datavizPlotScatter($repository, $project, $plotConfig);
-        } elseif ($type == 'box') {
-            $dplot = new datavizPlotBox($repository, $project, $plotConfig);
-        } elseif ($type == 'bar') {
-            $dplot = new datavizPlotBar($repository, $project, $plotConfig);
-        } elseif ($type == 'histogram') {
-            $dplot = new datavizPlotHistogram($repository, $project, $plotConfig);
-        } elseif ($type == 'pie') {
-            $dplot = new datavizPlotPie($repository, $project, $plotConfig);
-        } elseif ($type == 'histogram2d') {
-            $dplot = new datavizPlotHistogram2d($repository, $project, $plotConfig);
-        } elseif ($type == 'polar') {
-            $dplot = new datavizPlotPolar($repository, $project, $plotConfig);
-        } elseif ($type == 'sunburst') {
-            $dplot = new datavizPlotSunburst($repository, $project, $plotConfig);
-        } elseif ($type == 'html') {
-            $dplot = new datavizPlotHtml($repository, $project, $plotConfig);
-        } else {
-            $dplot = null;
-        }
+        $type = $plotConfig['plot']['type'] ?? '';
+        $dplot = PlotFactory::create($this->lizmapProject, $plotConfig);
         if (!$dplot) {
             return $this->error(
                 array(
@@ -349,7 +326,7 @@ class serviceCtrl extends jController
             );
         }
 
-        $fd = $dplot->fetchData('wfs', $exp_filter);
+        $fd = $dplot->fetchData($exp_filter);
         if (!$fd) {
             return $this->error(
                 array(
@@ -361,7 +338,7 @@ class serviceCtrl extends jController
             );
         }
         $plot = array(
-            'title' => $dplot->title,
+            'title' => $dplot->getTitle(),
             'data' => $dplot->getData(),
             'layout' => $dplot->getLayout(),
         );
