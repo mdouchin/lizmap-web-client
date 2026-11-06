@@ -18,12 +18,27 @@ use Lizmap\Project\Project;
 use Lizmap\Request\WFSRequest;
 use LizmapDataviz\GeoJson\FeatureStream;
 
+/**
+ * Read the features of a layer with a WFS GetFeature request.
+ *
+ * The request is processed by WFSRequest: by a direct query for PostgreSQL
+ * layers when possible, by QGIS Server otherwise. The features are decoded
+ * by blocks from the response stream.
+ */
 class WfsFeatureReader
 {
+    /** @var Project The Lizmap project */
     protected Project $project;
 
+    /** @var string The QGIS layer identifier */
     protected string $layerId;
 
+    /**
+     * Create the reader for the given layer.
+     *
+     * @param Project $project the Lizmap project, the ACL must have been checked
+     * @param string  $layerId the QGIS layer identifier
+     */
     public function __construct(Project $project, string $layerId)
     {
         $this->project = $project;
@@ -42,12 +57,14 @@ class WfsFeatureReader
      */
     public function read(array $propertyNames, string $expFilter = '', array $sortBy = array()): ?iterable
     {
+        // The layer must exist in the project
         /** @var null|\qgisVectorLayer $layer */
         $layer = $this->project->getLayer($this->layerId);
         if (!$layer) {
             return null;
         }
 
+        // GetFeature request in GeoJSON, without geometry
         $params = array(
             'SERVICE' => 'WFS',
             'VERSION' => '1.0.0',
@@ -56,6 +73,7 @@ class WfsFeatureReader
             'OUTPUTFORMAT' => 'GeoJSON',
             'GEOMETRYNAME' => 'none',
         );
+        // Filter the features with the QGIS expression
         if ($expFilter !== '') {
             // Add the fields used in the filter in PROPERTYNAME
             // bug in QGIS SERVER 2.18: send no data if fields in exp_filter not in PROPERTYNAME
@@ -64,14 +82,19 @@ class WfsFeatureReader
             }
             $params['EXP_FILTER'] = $expFilter;
         }
+        // Request only the needed fields
         $params['PROPERTYNAME'] = implode(',', array_unique(array_filter($propertyNames)));
+
+        // Sort the features if needed
         if ($sortBy) {
             $params['SORTBY'] = implode(',', $sortBy);
         }
 
+        // Process the request
         $request = new WFSRequest($this->project, $params, \lizmap::getServices());
         $response = $request->process();
 
+        // Errors are returned as XML or HTML
         if ($response->getCode() >= 400) {
             return null;
         }
@@ -79,6 +102,7 @@ class WfsFeatureReader
             return null;
         }
 
+        // Decode the features from the response stream
         $stream = StreamWrapper::getResource($response->getBodyAsStream());
 
         return FeatureStream::read($stream);

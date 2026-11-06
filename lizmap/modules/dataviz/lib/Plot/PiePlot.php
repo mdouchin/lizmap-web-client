@@ -27,6 +27,11 @@ class PiePlot extends AbstractPlot
 
     protected const Y_PROPERTY = 'values';
 
+    /**
+     * Get the trace template of the plot type.
+     *
+     * @return array the Plotly trace properties, with empty data
+     */
     protected function getTraceTemplate(): array
     {
         $template = array(
@@ -44,6 +49,7 @@ class PiePlot extends AbstractPlot
             'automargin' => true,
             'sort' => false, // slices will be sort by X data
         );
+        // White text outside the slices for the dark theme
         if ($this->theme == 'dark') {
             $template['outsidetextfont'] = array('color' => 'white');
         }
@@ -51,9 +57,18 @@ class PiePlot extends AbstractPlot
         return $template;
     }
 
+    /**
+     * Customize the layout for the plot type.
+     *
+     * No axis title is displayed.
+     *
+     * @param array $layout the default layout
+     *
+     * @return array the layout of the plot type
+     */
     protected function customizeLayout(array $layout): array
     {
-        // No axis title
+        // Legend below the plot, smaller bottom margin without legend
         $layout['legend']['y'] = '-5';
         if (!$this->displayLegend) {
             $layout['margin']['b'] = 10;

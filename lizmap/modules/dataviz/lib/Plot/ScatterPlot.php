@@ -21,6 +21,11 @@ class ScatterPlot extends AbstractPlot
 
     protected const SORT_BY_X = true;
 
+    /**
+     * Get the trace template of the plot type.
+     *
+     * @return array the Plotly trace properties, with empty data
+     */
     protected function getTraceTemplate(): array
     {
         return array(

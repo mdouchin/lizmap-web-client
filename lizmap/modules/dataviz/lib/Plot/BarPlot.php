@@ -19,6 +19,11 @@ class BarPlot extends AbstractPlot
 
     protected const FEATURE_COLORS = self::FEATURE_COLORS_MARKER_COLOR;
 
+    /**
+     * Get the trace template of the plot type.
+     *
+     * @return array the Plotly trace properties, with empty data
+     */
     protected function getTraceTemplate(): array
     {
         return array(
@@ -46,9 +51,18 @@ class BarPlot extends AbstractPlot
         );
     }
 
+    /**
+     * Customize the layout for the plot type.
+     *
+     * No axis title is displayed.
+     *
+     * @param array $layout the default layout
+     *
+     * @return array the layout of the plot type
+     */
     protected function customizeLayout(array $layout): array
     {
-        // No axis title
+        // Stack the bars of the traces if configured
         if (count($this->yFields) > 1 && $this->stacked) {
             $layout['barmode'] = 'stack';
         }

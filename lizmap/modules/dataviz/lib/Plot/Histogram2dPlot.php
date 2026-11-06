@@ -19,6 +19,11 @@ class Histogram2dPlot extends AbstractPlot
 
     protected const AGGREGATION_MODE = self::AGGREGATION_NEVER;
 
+    /**
+     * Get the trace template of the plot type.
+     *
+     * @return array the Plotly trace properties, with empty data
+     */
     protected function getTraceTemplate(): array
     {
         return array(

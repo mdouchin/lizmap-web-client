@@ -15,6 +15,9 @@ namespace LizmapDataviz\Plot;
 
 use Lizmap\Project\Project;
 
+/**
+ * Create the plot corresponding to the type of the plot configuration.
+ */
 class PlotFactory
 {
     /** @var array<string, class-string<AbstractPlot>> */
@@ -40,10 +43,13 @@ class PlotFactory
      */
     public static function create(Project $project, array $plotConfig): ?AbstractPlot
     {
+        // Only the supported types are allowed
         $type = $plotConfig['plot']['type'] ?? null;
         if (!is_string($type) || !array_key_exists($type, self::TYPES)) {
             return null;
         }
+
+        // Create the plot of the class corresponding to the type
         $class = self::TYPES[$type];
 
         return new $class($project, $plotConfig);

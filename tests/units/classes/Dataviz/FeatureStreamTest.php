@@ -5,6 +5,13 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 /**
+ * Tests of the decoding of GeoJSON features by blocks.
+ *
+ * The decoded features must be exactly the ones of the whole GeoJSON,
+ * whatever its layout (QGIS Server, PostgreSQL direct query, pretty printed)
+ * and the chunk size, even when the separator between two features
+ * also appears inside the features.
+ *
  * @internal
  *
  * @coversNothing
@@ -12,7 +19,11 @@ use PHPUnit\Framework\TestCase;
 class FeatureStreamTest extends TestCase
 {
     /**
-     * @return resource
+     * Create a stream containing the given content.
+     *
+     * @param string $content the stream content
+     *
+     * @return resource the stream, positioned at its beginning
      */
     private static function stream(string $content)
     {
@@ -23,6 +34,17 @@ class FeatureStreamTest extends TestCase
         return $stream;
     }
 
+    /**
+     * Get test features which are difficult to split.
+     *
+     * Their properties contain the separator between two features ("},{")
+     * in strings and between nested objects, and an escaped new line.
+     * The variable string length moves the separators in the chunks.
+     *
+     * @param int $count the number of features
+     *
+     * @return array the features, as arrays
+     */
     private static function features(int $count): array
     {
         $features = array();
@@ -45,7 +67,12 @@ class FeatureStreamTest extends TestCase
     }
 
     /**
-     * GeoJSON written by QGIS Server: one feature per line.
+     * Get the GeoJSON as written by QGIS Server: one feature per line,
+     * separated by a new line and a comma.
+     *
+     * @param array $features the features
+     *
+     * @return string the GeoJSON
      */
     private static function qgisServerGeoJson(array $features): string
     {
@@ -60,7 +87,13 @@ class FeatureStreamTest extends TestCase
     }
 
     /**
-     * GeoJSON written by the PostgreSQL direct query (row_to_json with line feeds).
+     * Get the GeoJSON as written by the PostgreSQL direct query of Lizmap:
+     * features separated by a comma only, with new lines inside the features
+     * (row_to_json with pretty_bool).
+     *
+     * @param array $features the features
+     *
+     * @return string the GeoJSON
      */
     private static function postgresqlGeoJson(array $features): string
     {
@@ -73,6 +106,15 @@ class FeatureStreamTest extends TestCase
         return '{"type": "FeatureCollection", "features": ['.implode(',', $rows).']}';
     }
 
+    /**
+     * Get the GeoJSON documents to decode.
+     *
+     * The small chunks (100 bytes) are smaller than a feature, so a feature
+     * is often split between two chunks.
+     *
+     * @return array<string, array{0: string, 1: int, 2: int}> the GeoJSON,
+     *                                                         the chunk size and the expected number of features
+     */
     public static function geoJsonProvider(): array
     {
         $features = self::features(500);
@@ -83,7 +125,9 @@ class FeatureStreamTest extends TestCase
             'QGIS Server, default chunks' => array(self::qgisServerGeoJson($features), 32768, 500),
             'PostgreSQL, small chunks' => array(self::postgresqlGeoJson($features), 100, 500),
             'PostgreSQL, default chunks' => array(self::postgresqlGeoJson($features), 32768, 500),
+            // Many whitespaces around the separators
             'Pretty printed' => array($pretty, 256, 500),
+            // Collection members after the features array
             'Members after features' => array(
                 json_encode(array('type' => 'FeatureCollection', 'features' => $features, 'numberMatched' => 500)),
                 1024,
@@ -94,9 +138,18 @@ class FeatureStreamTest extends TestCase
         );
     }
 
+    /**
+     * Test that the features decoded by blocks are the same as the ones
+     * decoded from the whole GeoJSON.
+     *
+     * @param string $geoJson   the GeoJSON
+     * @param int    $chunkSize the number of bytes read at once
+     * @param int    $count     the expected number of features
+     */
     #[DataProvider('geoJsonProvider')]
     public function testRead(string $geoJson, int $chunkSize, int $count): void
     {
+        // Reference: the features decoded at once
         $expected = json_decode($geoJson)->features ?? array();
 
         $features = iterator_to_array(FeatureStream::read(self::stream($geoJson), $chunkSize), false);
@@ -105,8 +158,13 @@ class FeatureStreamTest extends TestCase
         $this->assertEquals($expected, $features);
     }
 
+    /**
+     * Test that a truncated GeoJSON, for example after a network error,
+     * raises an exception instead of returning partial data silently.
+     */
     public function testTruncatedGeoJson(): void
     {
+        // Cut the GeoJSON in the middle of the features
         $geoJson = self::qgisServerGeoJson(self::features(100));
         $truncated = substr($geoJson, 0, (int) (strlen($geoJson) * 0.7));
 

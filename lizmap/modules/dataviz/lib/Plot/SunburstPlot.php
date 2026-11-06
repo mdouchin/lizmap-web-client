@@ -36,6 +36,11 @@ class SunburstPlot extends AbstractPlot
 
     protected const Z_PROPERTY = 'parents';
 
+    /**
+     * Get the trace template of the plot type.
+     *
+     * @return array the Plotly trace properties, with empty data
+     */
     protected function getTraceTemplate(): array
     {
         $template = array(
@@ -49,6 +54,7 @@ class SunburstPlot extends AbstractPlot
             'texttemplate' => '%{value:.1f}',
             'opacity' => null,
         );
+        // White text outside the nodes for the dark theme
         if ($this->theme == 'dark') {
             $template['outsidetextfont'] = array('color' => 'white');
         }
@@ -56,9 +62,18 @@ class SunburstPlot extends AbstractPlot
         return $template;
     }
 
+    /**
+     * Customize the layout for the plot type.
+     *
+     * No axis title is displayed.
+     *
+     * @param array $layout the default layout
+     *
+     * @return array the layout of the plot type
+     */
     protected function customizeLayout(array $layout): array
     {
-        // No axis title
+        // Legend below the plot and small bottom margin
         $layout['legend']['y'] = '-5';
         $layout['margin']['b'] = 10;
 
@@ -66,7 +81,15 @@ class SunburstPlot extends AbstractPlot
     }
 
     /**
-     * The values are aggregated by (parent, label).
+     * Get the group of a feature: its parent and its label.
+     *
+     * The same label can be used by several parents, so the values
+     * are aggregated by (parent, label).
+     *
+     * @param object $properties the feature properties
+     * @param mixed  $x          the feature X value (label), not null
+     *
+     * @return array the parent (null if none) and the label
      */
     protected function getGroup(object $properties, mixed $x): mixed
     {
@@ -86,10 +109,20 @@ class SunburstPlot extends AbstractPlot
      * Groups without parent are attached to the root.
      *
      * As a label can be used by several parents, each node has a unique id.
+     *
+     * @param array       $trace  the sunburst trace
+     * @param list<array> $groups the groups: [parent, label]
+     * @param list<mixed> $values the aggregated value of each group
+     * @param null|array  $colors the color of each group, null if none
+     *
+     * @return null|array the colors of all the nodes, null if none
      */
     protected function setAggregatedValues(array &$trace, array $groups, array $values, ?array $colors): ?array
     {
         $root = self::ROOT;
+
+        // Build the parent nodes from the groups. A parent has the sum
+        // of the values of its children, and the color of its first child.
 
         $parentIndex = new GroupIndex();
         $parentNodes = array();
@@ -101,6 +134,7 @@ class SunburstPlot extends AbstractPlot
             $value = is_numeric($values[$i]) ? $values[$i] + 0 : 0;
             $total += $value;
 
+            // Groups without parent are attached to the root
             $parentId = $root;
             if ($parent !== null && $parent !== '') {
                 $p = $parentIndex->positionOf($parent);
@@ -118,12 +152,14 @@ class SunburstPlot extends AbstractPlot
                 }
                 $parentId = $parentNodes[$p]['id'];
             }
+            // The group position makes the child id unique
             $childIds[] = $parentId.'/'.$i;
             $childLabels[] = $label;
             $childParents[] = $parentId;
         }
 
-        // ids are only used by Plotly to build the hierarchy
+        // The nodes: the root first, then the parents, then the groups.
+        // The ids are only used by Plotly to build the hierarchy.
         $ids = array($root);
         $labels = array($root);
         $nodeValues = array($total);
@@ -137,11 +173,13 @@ class SunburstPlot extends AbstractPlot
             $nodeColors[] = $node['color'];
         }
 
+        // Set the nodes in the trace
         $trace['ids'] = array_merge($ids, $childIds);
         $trace[self::X_PROPERTY] = array_merge($labels, $childLabels);
         $trace[self::Y_PROPERTY] = array_merge($nodeValues, $values);
         $trace[self::Z_PROPERTY] = array_merge($parents, $childParents);
 
+        // The colors of the nodes, in the same order
         if ($colors === null) {
             return null;
         }
@@ -150,6 +188,8 @@ class SunburstPlot extends AbstractPlot
     }
 
     /**
+     * Get the field containing the parent of the features.
+     *
      * @return null|string the parent field: the Z field of the first trace
      */
     private function getParentField(): ?string

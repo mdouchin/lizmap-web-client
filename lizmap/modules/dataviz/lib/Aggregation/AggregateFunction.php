@@ -48,14 +48,18 @@ final class AggregateFunction
      */
     public static function normalize(mixed $value): ?string
     {
+        // No aggregation if the value is not a string
         if (!is_string($value)) {
             return null;
         }
+
+        // Case insensitive, with "mean" as an alias of "avg"
         $value = strtolower(trim($value));
         if ($value === 'mean') {
             $value = self::AVG;
         }
 
+        // Unknown values, like "no" or "none", mean no aggregation
         return in_array($value, self::ALL, true) ? $value : null;
     }
 }

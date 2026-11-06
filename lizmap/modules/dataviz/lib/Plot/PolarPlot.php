@@ -21,6 +21,11 @@ class PolarPlot extends AbstractPlot
 
     protected const Y_PROPERTY = 't';
 
+    /**
+     * Get the trace template of the plot type.
+     *
+     * @return array the Plotly trace properties, with empty data
+     */
     protected function getTraceTemplate(): array
     {
         return array(

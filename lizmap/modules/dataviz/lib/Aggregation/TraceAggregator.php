@@ -69,16 +69,26 @@ final class TraceAggregator
     private array $colors = array();
 
     /**
+     * Create an aggregator for the given function.
+     *
      * @param string $function one of the AggregateFunction constants
+     *
+     * @throws \InvalidArgumentException if the function is not supported
      */
     public function __construct(string $function)
     {
+        // Only the supported functions are allowed
         if (!in_array($function, AggregateFunction::ALL, true)) {
             throw new \InvalidArgumentException('Unknown aggregate function "'.$function.'"');
         }
         $this->function = $function;
     }
 
+    /**
+     * Get the aggregate function.
+     *
+     * @return string one of the AggregateFunction constants
+     */
     public function getFunction(): string
     {
         return $this->function;
@@ -87,16 +97,20 @@ final class TraceAggregator
     /**
      * Add a feature value to a group.
      *
+     * Only the state needed by the aggregate function is updated.
+     *
      * @param int   $group the group position given by the GroupIndex
      * @param mixed $value the feature value (Y)
      * @param mixed $color the feature color, if any
      */
     public function add(int $group, mixed $value, mixed $color = null): void
     {
+        // Keep the first non empty color of the group
         if ($color !== null && $color !== '' && !isset($this->colors[$group])) {
             $this->colors[$group] = $color;
         }
 
+        // Functions using any value, numeric or not
         switch ($this->function) {
             case AggregateFunction::COUNT:
                 $this->values[$group] = ($this->values[$group] ?? 0) + 1;
@@ -116,11 +130,13 @@ final class TraceAggregator
                 return;
         }
 
+        // The other functions ignore the non numeric values
         $number = self::toNumber($value);
         if ($number === null) {
             return;
         }
 
+        // Functions using the numeric values
         switch ($this->function) {
             case AggregateFunction::SUM:
                 $this->values[$group] = ($this->values[$group] ?? 0) + $number;
@@ -148,7 +164,9 @@ final class TraceAggregator
                 break;
 
             case AggregateFunction::STDDEV:
-                // Welford online algorithm
+                // Welford online algorithm: update the count, the mean and
+                // the sum of squares of differences from the mean, without
+                // keeping the values
                 $count = ($this->counts[$group] ?? 0) + 1;
                 $mean = $this->means[$group] ?? 0.0;
                 $delta = $number - $mean;
@@ -160,6 +178,7 @@ final class TraceAggregator
                 break;
 
             case AggregateFunction::MEDIAN:
+                // The median needs all the values
                 $this->samples[$group][] = $number;
 
                 break;
@@ -175,6 +194,8 @@ final class TraceAggregator
      */
     public function results(int $groupCount): array
     {
+        // A group may have no state, for example a group with only
+        // non numeric values: result() gives its default value
         $results = array();
         for ($group = 0; $group < $groupCount; ++$group) {
             $results[] = $this->result($group);
@@ -194,9 +215,12 @@ final class TraceAggregator
      */
     public function colors(int $groupCount): ?array
     {
+        // No color at all
         if (count($this->colors) === 0) {
             return null;
         }
+
+        // One color per group, null if the group has no color
         $colors = array();
         for ($group = 0; $group < $groupCount; ++$group) {
             $colors[] = $this->colors[$group] ?? null;
@@ -205,6 +229,14 @@ final class TraceAggregator
         return $colors;
     }
 
+    /**
+     * Get the aggregated value of a group.
+     *
+     * @param int $group the group position
+     *
+     * @return mixed the aggregated value: 0 for an empty count or sum,
+     *               null for the other functions if the group has no value
+     */
     private function result(int $group): mixed
     {
         switch ($this->function) {
@@ -213,6 +245,7 @@ final class TraceAggregator
                 return $this->values[$group] ?? 0;
 
             case AggregateFunction::AVG:
+                // Mean of the numeric values
                 if (empty($this->counts[$group])) {
                     return null;
                 }
@@ -237,7 +270,11 @@ final class TraceAggregator
     }
 
     /**
-     * @param list<float|int> $values
+     * Compute the median of the values.
+     *
+     * @param list<float|int> $values the numeric values
+     *
+     * @return null|float|int the median, null if there is no value
      */
     private static function median(array $values): null|float|int
     {
@@ -247,21 +284,31 @@ final class TraceAggregator
         }
         sort($values, SORT_NUMERIC);
         $middle = intdiv($count, 2);
+
+        // Odd count: the middle value
         if ($count % 2 === 1) {
             return $values[$middle];
         }
 
+        // Even count: the mean of the two middle values
         return ($values[$middle - 1] + $values[$middle]) / 2;
     }
 
     /**
      * Convert a value to a number, if possible.
+     *
+     * @param mixed $value the value
+     *
+     * @return null|float|int the number, null if the value is not numeric
      */
     private static function toNumber(mixed $value): null|float|int
     {
+        // Booleans are not considered as numbers
         if (is_int($value) || is_float($value)) {
             return $value;
         }
+
+        // Numeric strings, for example from a text field
         if (is_string($value) && is_numeric($value)) {
             return $value + 0;
         }

@@ -32,9 +32,16 @@ final class GroupIndex
 
     /**
      * Get the position of the given value, adding it if not yet known.
+     *
+     * @param mixed $value the group value: a scalar, or an array for groups
+     *                     made of several values
+     *
+     * @return int the position of the value, starting at 0
      */
     public function positionOf(mixed $value): int
     {
+        // Build a key keeping the value type: the prefix avoids
+        // the cast of numeric strings to int by PHP array keys
         if (is_string($value)) {
             $key = 's'.$value;
         } elseif (is_int($value)) {
@@ -43,6 +50,7 @@ final class GroupIndex
             $key = 'o'.json_encode($value);
         }
 
+        // Add the value if it is not yet known
         $position = $this->positions[$key] ?? null;
         if ($position === null) {
             $position = count($this->values);
@@ -54,6 +62,8 @@ final class GroupIndex
     }
 
     /**
+     * Get the distinct values.
+     *
      * @return list<mixed> the distinct values, in order of first appearance
      */
     public function values(): array
@@ -61,6 +71,11 @@ final class GroupIndex
         return $this->values;
     }
 
+    /**
+     * Get the number of distinct values.
+     *
+     * @return int the number of distinct values
+     */
     public function count(): int
     {
         return count($this->values);

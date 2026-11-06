@@ -47,6 +47,10 @@ class FeatureStream
     /**
      * Get the features of the GeoJSON stream.
      *
+     * The stream is read by chunks, and the complete features of the chunks
+     * are decoded together. Only the current chunk and the decoded block of
+     * features are kept in memory.
+     *
      * @param resource $stream    the GeoJSON FeatureCollection stream
      * @param int      $chunkSize the number of bytes read at once
      *
@@ -56,7 +60,8 @@ class FeatureStream
      */
     public static function read($stream, int $chunkSize = 32768): \Generator
     {
-        // Find the beginning of the features array
+        // Read the stream until the beginning of the features array,
+        // after the other members of the collection (type, bbox...)
         $buffer = '';
         $start = false;
         while ($start === false) {
@@ -73,8 +78,12 @@ class FeatureStream
             $buffer .= $chunk;
             $start = self::findFeaturesStart($buffer);
         }
+
+        // Keep only the features in the buffer: it starts with the first one
         $buffer = substr($buffer, $start);
 
+        // Read the next chunks and decode the complete features of the buffer.
+        // The last feature, which may be incomplete, stays in the buffer.
         while (true) {
             $chunk = fread($stream, $chunkSize);
             if ($chunk === false || $chunk === '') {
@@ -100,15 +109,21 @@ class FeatureStream
     }
 
     /**
-     * @return false|int the position after the "[" of the features array
+     * Find the beginning of the features array in the buffer.
+     *
+     * @param string $buffer the beginning of the GeoJSON
+     *
+     * @return false|int the position after the "[" of the features array,
+     *                   false if it is not in the buffer yet
      */
     private static function findFeaturesStart(string $buffer): false|int
     {
+        // The features member, then the opening bracket of its array
         $key = strpos($buffer, '"features"');
         if ($key === false) {
             return false;
         }
-        $bracket = strpos($buffer, '[', $key + 10);
+        $bracket = strpos($buffer, '[', $key + strlen('"features"'));
         if ($bracket === false) {
             return false;
         }
@@ -120,6 +135,10 @@ class FeatureStream
      * Decode the complete features at the beginning of the buffer
      * and remove them from the buffer.
      *
+     * The block of features ends at the last separator found in the buffer.
+     * If the block can not be decoded, the separator was inside a feature,
+     * and the previous separators are tried.
+     *
      * @param string $buffer the features, the first one starts the buffer
      *
      * @return null|array the decoded features, null if no block can be decoded yet
@@ -128,40 +147,58 @@ class FeatureStream
     {
         $offset = strlen($buffer);
         for ($attempt = 0; $attempt < self::MAX_CUT_ATTEMPTS; ++$attempt) {
+            // Find the previous separator between two features
             $comma = self::findSeparatorBefore($buffer, $offset);
             if ($comma === false) {
                 return null;
             }
+
+            // Decode the features before the separator as a JSON array.
+            // It is valid JSON only if the separator is between two features.
             $features = json_decode('['.substr($buffer, 0, $comma).']');
             if (is_array($features)) {
+                // Keep the features after the separator in the buffer
                 $buffer = substr($buffer, $comma + 1);
 
                 return $features;
             }
+
+            // The separator is inside a feature: try the previous one
             $offset = $comma;
         }
 
+        // Too many attempts: wait for the next chunk
         return null;
     }
 
     /**
      * Find, backward from the offset, a comma between "}" and "{".
      *
-     * @return false|int the position of the comma
+     * Whitespaces are allowed around the comma, as QGIS Server writes
+     * a new line before it.
+     *
+     * @param string $buffer the features
+     * @param int    $offset the position before which the comma is searched
+     *
+     * @return false|int the position of the comma, false if not found
      */
     private static function findSeparatorBefore(string $buffer, int $offset): false|int
     {
         for ($commas = 0; $offset > 0 && $commas < self::MAX_COMMAS; ++$commas) {
+            // Find the previous comma: a negative offset makes strrpos
+            // search backward, from the character before $offset
             $comma = strrpos($buffer, ',', $offset - strlen($buffer) - 1);
             if ($comma === false) {
                 return false;
             }
             $offset = $comma;
 
+            // The comma must follow a "}", ignoring whitespaces
             $before = rtrim(substr($buffer, max(0, $comma - self::MAX_WHITESPACES), min(self::MAX_WHITESPACES, $comma)));
             if (!str_ends_with($before, '}')) {
                 continue;
             }
+            // and be followed by a "{", ignoring whitespaces
             $after = ltrim(substr($buffer, $comma + 1, self::MAX_WHITESPACES));
             if (!str_starts_with($after, '{')) {
                 continue;
