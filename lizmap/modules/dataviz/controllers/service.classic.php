@@ -55,7 +55,7 @@ class serviceCtrl extends jController
      * @urlparam $PROJECT Name of the project
      * @urlparam $REQUEST Request type
      *
-     * @return jResponseJson the request response
+     * @return jResponseBinary|jResponseJson the request response
      */
     public function index()
     {
@@ -81,7 +81,7 @@ class serviceCtrl extends jController
     /**
      * Process the request.
      *
-     * @return jResponseJson the request response
+     * @return jResponseBinary|jResponseJson the request response
      */
     protected function processRequest()
     {
@@ -226,7 +226,7 @@ class serviceCtrl extends jController
     /**
      * Get Plot config.
      *
-     * @return jResponseJson the GetPlot response
+     * @return jResponseBinary|jResponseJson the GetPlot response, or the errors
      */
     protected function GetPlot()
     {
@@ -244,9 +244,6 @@ class serviceCtrl extends jController
             }
             jLog::log('Dataviz - parameter plot_config = '.$logPlotConfigParameter, 'lizmapadmin');
         }
-
-        /** @var jResponseJson $rep */
-        $rep = $this->getResponse('json');
 
         // Get the plot configuration from Lizmap config file
         $plotConfig = null;
@@ -337,22 +334,27 @@ class serviceCtrl extends jController
                 )
             );
         }
-        $plot = array(
-            'title' => $dplot->getTitle(),
-            'data' => $dplot->getData(),
-            'layout' => $dplot->getLayout(),
-        );
-
         // We also add the URL to access the Plotly JavaScript file
         // to let the client use the same one
         $basePath = jApp::config()->urlengine['basePath'];
         $locale = substr(jApp::config()->locale, 0, 2);
-        $plot['plotly'] = array(
+        $plotly = array(
             'script' => $basePath.'assets/js/dataviz/plotly-custom.min.js',
             'locale' => $basePath.'assets/js/dataviz/plotly-locale-'.$locale.'.js',
         );
 
-        $rep->data = $plot;
+        // Stream the JSON response: the plot values are copied
+        // from temporary streams, without being loaded in memory
+        /** @var jResponseBinary $rep */
+        $rep = $this->getResponse('binary');
+        $rep->mimeType = 'application/json';
+        $rep->outputFileName = 'plot.json';
+        $rep->doDownload = false;
+        $rep->content = function () use ($dplot, $plotly) {
+            $output = fopen('php://output', 'w');
+            $dplot->writeJson($output, array('plotly' => $plotly));
+            fclose($output);
+        };
 
         return $rep;
     }

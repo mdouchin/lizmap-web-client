@@ -17,6 +17,8 @@ use Lizmap\Project\Project;
 use LizmapDataviz\Aggregation\AggregateFunction;
 use LizmapDataviz\Aggregation\GroupIndex;
 use LizmapDataviz\Aggregation\TraceAggregator;
+use LizmapDataviz\Json\JsonColumn;
+use LizmapDataviz\Json\JsonStreamWriter;
 
 /**
  * Build the Plotly data and layout of a plot from the layer features.
@@ -147,11 +149,48 @@ abstract class AbstractPlot
     }
 
     /**
+     * Get the Plotly traces with all their values.
+     *
+     * For a large number of features, prefer writeJson() which uses less memory.
+     *
      * @return array the Plotly traces
      */
     public function getData(): array
     {
+        return json_decode(JsonStreamWriter::encode($this->data), true);
+    }
+
+    /**
+     * Get the Plotly traces, in which the long lists of values are JsonColumn.
+     *
+     * The traces can be written with JsonStreamWriter.
+     *
+     * @return array the Plotly traces
+     */
+    public function getTraces(): array
+    {
         return $this->data;
+    }
+
+    /**
+     * Write the plot as JSON: title, data (traces) and layout.
+     *
+     * The values are copied from their temporary streams.
+     *
+     * @param resource $output     the output stream
+     * @param array    $properties additional properties of the JSON object
+     */
+    public function writeJson($output, array $properties = array()): void
+    {
+        $plot = array_merge(
+            array(
+                'title' => $this->getTitle(),
+                'data' => $this->getTraces(),
+                'layout' => $this->getLayout(),
+            ),
+            $properties
+        );
+        JsonStreamWriter::write($plot, $output);
     }
 
     /**
@@ -477,12 +516,29 @@ abstract class AbstractPlot
     {
         $xField = count($this->xFields) == 1 ? $this->xFields[0] : null;
         $traceFields = $this->getTraceFields();
-        $traceCount = count($traceFields);
 
-        $xValues = array();
-        $yValues = array_fill(0, $traceCount, array());
-        $colors = array_fill(0, $traceCount, array());
-        $hasColors = array_fill(0, $traceCount, false);
+        // The values are stored as JSON in temporary streams,
+        // so the memory used does not depend on the number of features
+        $xValues = $xField !== null ? new JsonColumn() : null;
+        $traces = array();
+        $yValues = array();
+        $colors = array();
+        $defaultColors = array();
+        $hasColors = array();
+        foreach ($traceFields as $i => $fields) {
+            $traces[$i] = $this->createTrace($i, $fields['y']);
+            $yValues[$i] = new JsonColumn();
+            $colors[$i] = null;
+            if ($fields['color'] !== null && static::FEATURE_COLORS !== self::FEATURE_COLORS_NONE) {
+                $colors[$i] = new JsonColumn();
+            }
+            // Use the trace color for the values without color
+            $defaultColors[$i] = null;
+            if (static::FEATURE_COLORS === self::FEATURE_COLORS_MARKER_COLOR) {
+                $defaultColors[$i] = $traces[$i]['marker']['color'] ?? null;
+            }
+            $hasColors[$i] = false;
+        }
 
         $first = true;
         foreach ($features as $feature) {
@@ -494,18 +550,19 @@ abstract class AbstractPlot
             }
             $properties = $feature->properties;
 
-            if ($xField !== null) {
-                $xValues[] = $properties->{$xField} ?? null;
+            if ($xValues !== null) {
+                $xValues->append($properties->{$xField} ?? null);
             }
             foreach ($traceFields as $i => $fields) {
-                $yValues[$i][] = $properties->{$fields['y']} ?? null;
-                if ($fields['color'] !== null) {
+                $yValues[$i]->append($properties->{$fields['y']} ?? null);
+                if ($colors[$i] !== null) {
                     $color = $properties->{$fields['color']} ?? null;
-                    if ($color === '') {
-                        $color = null;
+                    if ($color === null || $color === '') {
+                        $color = $defaultColors[$i];
+                    } else {
+                        $hasColors[$i] = true;
                     }
-                    $colors[$i][] = $color;
-                    $hasColors[$i] = $hasColors[$i] || $color !== null;
+                    $colors[$i]->append($color);
                 }
             }
         }
@@ -515,21 +572,17 @@ abstract class AbstractPlot
             return array();
         }
 
-        $traces = array();
-        foreach ($traceFields as $i => $fields) {
-            $trace = $this->createTrace($i, $fields['y']);
+        foreach ($traces as $i => $trace) {
             list($categoryProperty, $valueProperty) = $this->getAxisProperties($trace);
-            if ($xField !== null) {
+            if ($xValues !== null) {
+                // The same column can be used by several traces
                 $trace[$categoryProperty] = $xValues;
             }
             $trace[$valueProperty] = $yValues[$i];
-            // Free memory as soon as possible
-            $yValues[$i] = null;
-
-            $this->applyColors($trace, $hasColors[$i] ? $colors[$i] : null);
-            $colors[$i] = null;
-
-            $traces[] = $this->finalizeTrace($trace);
+            if ($hasColors[$i]) {
+                $this->setFeatureColors($trace, $colors[$i]);
+            }
+            $traces[$i] = $this->finalizeTrace($trace);
         }
 
         return $traces;
@@ -652,10 +705,7 @@ abstract class AbstractPlot
         if ($colors === null) {
             return;
         }
-        if (static::FEATURE_COLORS === self::FEATURE_COLORS_MARKER_COLORS) {
-            $trace['marker']['colors'] = $colors;
-            unset($trace['marker']['color']);
-        } elseif (static::FEATURE_COLORS === self::FEATURE_COLORS_MARKER_COLOR) {
+        if (static::FEATURE_COLORS === self::FEATURE_COLORS_MARKER_COLOR) {
             // Use the trace color for the values without color
             $traceColor = $trace['marker']['color'] ?? null;
             foreach ($colors as $i => $color) {
@@ -663,17 +713,33 @@ abstract class AbstractPlot
                     $colors[$i] = $traceColor;
                 }
             }
+        }
+        $this->setFeatureColors($trace, $colors);
+    }
+
+    /**
+     * Set the feature colors in the trace property used by the plot type.
+     *
+     * @param array|JsonColumn $colors the colors
+     */
+    private function setFeatureColors(array &$trace, array|JsonColumn $colors): void
+    {
+        if (static::FEATURE_COLORS === self::FEATURE_COLORS_MARKER_COLORS) {
+            $trace['marker']['colors'] = $colors;
+            unset($trace['marker']['color']);
+        } elseif (static::FEATURE_COLORS === self::FEATURE_COLORS_MARKER_COLOR) {
             $trace['marker']['color'] = $colors;
         }
     }
 
     /**
-     * Replace empty data arrays by null.
+     * Replace empty data arrays or columns by null.
      */
     private function finalizeTrace(array $trace): array
     {
         foreach (array(static::X_PROPERTY, static::Y_PROPERTY, static::Z_PROPERTY) as $property) {
-            if ($property !== null && is_array($trace[$property] ?? null) && count($trace[$property]) == 0) {
+            $values = $property !== null ? ($trace[$property] ?? null) : null;
+            if ((is_array($values) || $values instanceof JsonColumn) && count($values) == 0) {
                 $trace[$property] = null;
             }
         }

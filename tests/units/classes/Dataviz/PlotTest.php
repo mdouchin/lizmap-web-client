@@ -192,4 +192,20 @@ class PlotTest extends TestCase
         $plot->buildTraces(self::getFeatures());
         $this->assertEquals(array('color' => 'white'), $plot->getData()[0]['outsidetextfont']);
     }
+
+    public function testWriteJson(): void
+    {
+        foreach (array(array('bar', 'no'), array('pie', 'sum'), array('sunburst', 'count')) as list($type, $aggregation)) {
+            $plot = $this->buildPlot(self::getPlotConfig($type, $aggregation));
+            $output = fopen('php://memory', 'r+');
+            $plot->writeJson($output, array('plotly' => array('script' => 'plotly.js')));
+            rewind($output);
+            $json = json_decode(stream_get_contents($output), true);
+
+            $this->assertEquals('Title', $json['title']);
+            $this->assertSame($plot->getData(), $json['data']);
+            $this->assertEquals($plot->getLayout(), $json['layout']);
+            $this->assertEquals(array('script' => 'plotly.js'), $json['plotly']);
+        }
+    }
 }
