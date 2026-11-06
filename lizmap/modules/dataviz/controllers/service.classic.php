@@ -338,11 +338,12 @@ class serviceCtrl extends jController
         $rep->mimeType = 'application/json';
         $rep->outputFileName = 'plot.json';
         $rep->doDownload = false;
-        $rep->content = function () use ($dplot, $plotly) {
+        $rep->setContentCallback(function () use ($dplot, $plotly) {
+            // Write the plot JSON directly to the response output
             $output = fopen('php://output', 'w');
             $dplot->writeJson($output, array('plotly' => $plotly));
             fclose($output);
-        };
+        });
 
         return $rep;
     }
