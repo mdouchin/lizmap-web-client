@@ -516,7 +516,7 @@ let lizDataviz = function () {
                 let y_val = trace.y[x];
                 let y_search = '{$yi}'.replace('i', i + 1);
                 let localeString = dv.config.locale.replace('_', '-')
-                let y_replacement = y_val.toLocaleString(localeString);;
+                let y_replacement = (y_val === null || y_val === undefined) ? '' : y_val.toLocaleString(localeString);
                 html = html.split(y_search).join(y_replacement);
 
                 // Colors
