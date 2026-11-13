@@ -81,8 +81,17 @@ abstract class AbstractPlot
     /** @var bool The Y field is mandatory */
     protected const Y_MANDATORY = true;
 
-    /** @var bool The features are sorted by X */
+    /**
+     * @var bool The features are sorted by X. With AGGREGATED_COLUMNS, they are then
+     *           aggregated group by group, keeping only the state of the current group.
+     */
     protected const SORT_BY_X = false;
+
+    /**
+     * @var bool The aggregated values can be given as JsonColumn to setAggregatedValues(): they are then
+     *           never loaded in memory. False for the plot types processing the aggregated values.
+     */
+    protected const AGGREGATED_COLUMNS = true;
 
     /** @var string Trace property containing the X values */
     protected const X_PROPERTY = 'x';
@@ -319,6 +328,8 @@ abstract class AbstractPlot
      * Build the plot traces from the given features.
      *
      * The features are read only once, so they can be given by a generator.
+     * For the plot types sorted by X (SORT_BY_X), the features must be sorted
+     * by X, as requested by fetchData(): the aggregation is done group by group.
      *
      * @param iterable $features GeoJSON features (objects)
      *
@@ -422,14 +433,17 @@ abstract class AbstractPlot
      * By default, the groups are the categories and the aggregated values
      * are the values of the trace.
      *
-     * @param array       $trace  the trace
-     * @param list<mixed> $groups the groups
-     * @param list<mixed> $values the aggregated value of each group
-     * @param null|array  $colors the color of each group
+     * The groups, the values and the colors are JsonColumn only if the plot
+     * type allows it with AGGREGATED_COLUMNS.
      *
-     * @return null|array the colors of the trace values
+     * @param array                  $trace  the trace
+     * @param JsonColumn|list<mixed> $groups the groups
+     * @param JsonColumn|list<mixed> $values the aggregated value of each group
+     * @param null|array|JsonColumn  $colors the color of each group
+     *
+     * @return null|array|JsonColumn the colors of the trace values
      */
-    protected function setAggregatedValues(array &$trace, array $groups, array $values, ?array $colors): ?array
+    protected function setAggregatedValues(array &$trace, array|JsonColumn $groups, array|JsonColumn $values, null|array|JsonColumn $colors): null|array|JsonColumn
     {
         list($categoryProperty, $valueProperty) = $this->getAxisProperties($trace);
         $trace[$categoryProperty] = $groups;
@@ -768,6 +782,11 @@ abstract class AbstractPlot
      */
     private function buildAggregatedTraces(iterable $features): ?array
     {
+        // The features sorted by X can be aggregated group by group
+        if (static::SORT_BY_X && static::AGGREGATED_COLUMNS) {
+            return $this->buildSortedAggregatedTraces($features);
+        }
+
         $xField = $this->xFields[0];
         $traceFields = $this->getTraceFields();
 
@@ -828,10 +847,136 @@ abstract class AbstractPlot
     }
 
     /**
+     * Build the traces with one aggregated value per group, from features sorted by X.
+     *
+     * The features of a group are consecutive: only the state of the current
+     * group is kept. When the group changes, its aggregated values are written
+     * in JsonColumn, so the memory does not depend on the number of groups.
+     * It gives the same traces as buildAggregatedTraces() with sorted features.
+     *
+     * @param iterable $features the GeoJSON features, sorted by X
+     *
+     * @return null|array the traces, null if the features are not valid
+     */
+    private function buildSortedAggregatedTraces(iterable $features): ?array
+    {
+        $xField = $this->xFields[0];
+        $traceFields = $this->getTraceFields();
+
+        // The groups are shared by all the traces, so the values are aligned.
+        // Each trace has its aggregator, and columns for its values and colors.
+        $groups = new JsonColumn();
+        $aggregators = array();
+        $values = array();
+        $colors = array();
+        $defaultColors = array();
+        $hasColors = array();
+        foreach ($traceFields as $i => $fields) {
+            $aggregators[$i] = new TraceAggregator($this->aggregation);
+            $values[$i] = new JsonColumn();
+            // The colors are collected only if the plot type displays them
+            $colors[$i] = null;
+            if ($fields['color'] !== null && static::FEATURE_COLORS !== self::FEATURE_COLORS_NONE) {
+                $colors[$i] = new JsonColumn();
+            }
+            // Use the trace color for the groups without color, as applyColors() does
+            $defaultColors[$i] = null;
+            if (static::FEATURE_COLORS === self::FEATURE_COLORS_MARKER_COLOR) {
+                $defaultColors[$i] = $this->createTrace($i, $fields['y'])['marker']['color'] ?? null;
+            }
+            $hasColors[$i] = false;
+        }
+
+        // Write the aggregated values of the current group in the columns,
+        // then forget its state
+        $currentKey = null;
+        $currentGroup = null;
+        $writeGroup = function () use (&$currentGroup, $groups, $traceFields, $aggregators, $values, $colors, $defaultColors, &$hasColors): void {
+            $groups->append($currentGroup);
+            foreach ($traceFields as $i => $fields) {
+                $values[$i]->append($aggregators[$i]->result(0));
+                if ($colors[$i] !== null) {
+                    $color = $aggregators[$i]->color(0);
+                    if ($color === null) {
+                        $color = $defaultColors[$i];
+                    } else {
+                        $hasColors[$i] = true;
+                    }
+                    $colors[$i]->append($color);
+                }
+                $aggregators[$i]->reset();
+            }
+        };
+
+        // Aggregate the values of each feature in the current group
+        $first = true;
+        foreach ($features as $feature) {
+            // Check the fields of the first feature only
+            if ($first) {
+                if (!$this->isValidFeature($feature)) {
+                    return null;
+                }
+                $first = false;
+            }
+            $properties = $feature->properties;
+
+            // Features without X value are ignored
+            $x = $properties->{$xField} ?? null;
+            if ($x === null) {
+                continue;
+            }
+
+            // A new group: write the previous one
+            $group = $this->getGroup($properties, $x);
+            $key = GroupIndex::keyOf($group);
+            if ($key !== $currentKey) {
+                if ($currentKey !== null) {
+                    $writeGroup();
+                }
+                $currentKey = $key;
+                $currentGroup = $group;
+            }
+
+            // Add the feature values to the current group (position 0), for each trace
+            foreach ($traceFields as $i => $fields) {
+                $aggregators[$i]->add(
+                    0,
+                    $properties->{$fields['y']} ?? null,
+                    $fields['color'] !== null ? ($properties->{$fields['color']} ?? null) : null,
+                );
+            }
+        }
+
+        // No feature: no trace
+        if ($first) {
+            return array();
+        }
+
+        // Write the last group
+        if ($currentKey !== null) {
+            $writeGroup();
+        }
+
+        // The colors are set only if at least one group has a color
+        foreach ($traceFields as $i => $fields) {
+            if (!$hasColors[$i]) {
+                $colors[$i] = null;
+            }
+        }
+
+        return $this->createAggregatedTraces($groups, $values, $colors);
+    }
+
+    /**
      * Aggregate the values in the database, without getting the features.
      *
      * The same features as with WFS are aggregated: same filters, including
      * the filter by login and by polygon, and same groups and functions.
+     *
+     * PostgreSQL returns the groups and the aggregated values as JSON arrays,
+     * which are copied in JsonColumn without being decoded: the memory does
+     * not depend on the number of groups (except for the colors and for the
+     * plot types processing the groups, like sunburst).
      *
      * @param string $expFilter a QGIS expression to filter the features
      *
@@ -873,13 +1018,13 @@ abstract class AbstractPlot
 
         // Group by X (and parent for sunburst), ignoring the features
         // without X value. Keep the order of the WFS request.
-        $rows = $request->aggregate(
+        $columns = $request->aggregateColumns(
             $this->getGroupFields(),
             $aggregates,
             static::SORT_BY_X ? WFSAggregateRequest::ORDER_BY_GROUP : WFSAggregateRequest::ORDER_BY_FIRST_FEATURE,
             array($this->xFields[0]),
         );
-        if ($rows === null) {
+        if ($columns === null) {
             $this->logDebug('the aggregation is not done by the database: '.$request->getFailureReason());
 
             return null;
@@ -887,29 +1032,42 @@ abstract class AbstractPlot
         $this->logDebug('the aggregation is done by the database');
 
         // No feature: no trace
-        if (count($rows) === 0) {
+        $count = $columns['count'];
+        if ($count === 0) {
             return array();
         }
+        $decode = fn (string $json) => json_decode($json, true, 512, JSON_THROW_ON_ERROR);
 
-        // Read the groups and, for each trace, the values and the colors
-        $groups = array();
+        // The groups and the values. They are copied in JsonColumn without
+        // being decoded, except for the plot types which need to process them.
+        if (static::AGGREGATED_COLUMNS) {
+            $groups = JsonColumn::fromJson($columns['groups'][0], $count);
+        } else {
+            $groupColumns = array_map($decode, $columns['groups']);
+            $groups = array();
+            for ($g = 0; $g < $count; ++$g) {
+                $groups[] = $this->getGroupFromValues(array_map(fn (array $column) => $column[$g], $groupColumns));
+            }
+            unset($groupColumns);
+        }
         $values = array();
         $colors = array();
-        foreach ($rows as list($groupValues, $aggregatedValues)) {
-            $groups[] = $this->getGroupFromValues($groupValues);
-            foreach ($traceFields as $i => $fields) {
-                $values[$i][] = $aggregatedValues[$valueIndexes[$i]];
-                $colors[$i][] = $colorIndexes[$i] !== null ? $aggregatedValues[$colorIndexes[$i]] : null;
-            }
-        }
+        foreach ($traceFields as $i => $fields) {
+            $json = $columns['aggregates'][$valueIndexes[$i]];
+            $values[$i] = static::AGGREGATED_COLUMNS ? JsonColumn::fromJson($json, $count) : $decode($json);
 
-        // No color at all for a trace: keep the trace color,
-        // as with the aggregation in PHP
-        foreach ($colors as $i => $traceColors) {
-            if (count(array_filter($traceColors, fn ($color) => $color !== null)) === 0) {
-                $colors[$i] = null;
+            // The colors are decoded, to use the trace color for the groups
+            // without color. No color at all for a trace: keep the trace
+            // color, as with the aggregation in PHP.
+            $colors[$i] = null;
+            if ($colorIndexes[$i] !== null) {
+                $traceColors = $decode($columns['aggregates'][$colorIndexes[$i]]);
+                if (count(array_filter($traceColors, fn ($color) => $color !== null)) > 0) {
+                    $colors[$i] = $traceColors;
+                }
             }
         }
+        unset($columns);
 
         return $this->createAggregatedTraces($groups, $values, $colors);
     }
@@ -919,13 +1077,13 @@ abstract class AbstractPlot
      *
      * Used by the aggregation in PHP and in the database.
      *
-     * @param list<mixed>             $groups the groups, as returned by getGroup()
-     * @param array<int, list<mixed>> $values for each trace, the aggregated value of each group
-     * @param array<int, null|array>  $colors for each trace, the color of each group, null if none
+     * @param JsonColumn|list<mixed>             $groups the groups, as returned by getGroup()
+     * @param array<int, JsonColumn|list<mixed>> $values for each trace, the aggregated value of each group
+     * @param array<int, null|array|JsonColumn>  $colors for each trace, the color of each group, null if none
      *
      * @return array the traces
      */
-    private function createAggregatedTraces(array $groups, array $values, array $colors): array
+    private function createAggregatedTraces(array|JsonColumn $groups, array $values, array $colors): array
     {
         $traces = array();
         foreach ($this->getTraceFields() as $i => $fields) {
@@ -999,16 +1157,18 @@ abstract class AbstractPlot
     /**
      * Set the aggregated colors in the trace.
      *
-     * @param array      $trace  the trace
-     * @param null|array $colors the color of each value, null if none
+     * A JsonColumn already contains the trace color for the values without color.
+     *
+     * @param array                 $trace  the trace
+     * @param null|array|JsonColumn $colors the color of each value, null if none
      */
-    private function applyColors(array &$trace, ?array $colors): void
+    private function applyColors(array &$trace, null|array|JsonColumn $colors): void
     {
         // No color: keep the trace color
         if ($colors === null) {
             return;
         }
-        if (static::FEATURE_COLORS === self::FEATURE_COLORS_MARKER_COLOR) {
+        if (is_array($colors) && static::FEATURE_COLORS === self::FEATURE_COLORS_MARKER_COLOR) {
             // Use the trace color for the values without color
             $traceColor = $trace['marker']['color'] ?? null;
             foreach ($colors as $i => $color) {

@@ -129,6 +129,29 @@ class TraceAggregatorTest extends TestCase
     }
 
     /**
+     * Test that reset() forgets the state of the groups, so a new group
+     * can be aggregated at the same position.
+     */
+    public function testReset(): void
+    {
+        // First group: values and color
+        $aggregator = new TraceAggregator(AggregateFunction::AVG);
+        $aggregator->add(0, 2, 'red');
+        $aggregator->add(0, 4);
+        $this->assertSame(array(3), $aggregator->results(1));
+        $this->assertSame(array('red'), $aggregator->colors(1));
+        // The same, for a single group
+        $this->assertSame(3, $aggregator->result(0));
+        $this->assertSame('red', $aggregator->color(0));
+
+        // Next group at the same position, without the previous state
+        $aggregator->reset();
+        $aggregator->add(0, 10);
+        $this->assertSame(array(10), $aggregator->results(1));
+        $this->assertNull($aggregator->colors(1));
+    }
+
+    /**
      * Test that an unsupported aggregate function is rejected.
      */
     public function testUnknownFunction(): void
@@ -162,6 +185,19 @@ class TraceAggregatorTest extends TestCase
 
         // The values are returned unchanged
         $this->assertSame(array(1.5, 1.7, '1', 1, true, array('P1', 'A')), $groups->values());
+    }
+
+    /**
+     * Test the keys of the group values, used to compare the groups of
+     * consecutive features: same key only for the same type and value.
+     */
+    public function testGroupKey(): void
+    {
+        $this->assertSame(GroupIndex::keyOf('A'), GroupIndex::keyOf('A'));
+        $this->assertSame(GroupIndex::keyOf(array('P1', 'A')), GroupIndex::keyOf(array('P1', 'A')));
+        $this->assertNotSame(GroupIndex::keyOf('1'), GroupIndex::keyOf(1));
+        $this->assertNotSame(GroupIndex::keyOf(1), GroupIndex::keyOf(1.0));
+        $this->assertNotSame(GroupIndex::keyOf(1.5), GroupIndex::keyOf(1.7));
     }
 
     /**

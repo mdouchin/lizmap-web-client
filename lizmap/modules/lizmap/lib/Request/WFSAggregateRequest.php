@@ -26,9 +26,9 @@ use Lizmap\Project\Project;
  *
  * The aggregation is not always possible: not a PostgreSQL layer, OGC FILTER
  * parameter, expression filter not translatable to SQL, numeric function on
- * a non numeric field, database error... In these cases, aggregate() returns
- * null and the caller must use a GetFeature request instead. The reason is
- * given by getFailureReason().
+ * a non numeric field, database error... In these cases, aggregate() and
+ * aggregateColumns() return null and the caller must use a GetFeature request
+ * instead. The reason is given by getFailureReason().
  *
  * Usage:
  *     $request = new WFSAggregateRequest($project, array(
@@ -40,6 +40,9 @@ use Lizmap\Project\Project;
  *         array(array('sum', 'value'), array('count', null)),
  *     );
  *     // $rows = array(array(array('A'), array(12.5, 3)), ...)
+ *
+ * For many groups, aggregateColumns() gives the same values as JSON arrays
+ * built by PostgreSQL, one per column, which do not need to be decoded.
  */
 class WFSAggregateRequest extends WFSRequest
 {
@@ -148,6 +151,9 @@ class WFSAggregateRequest extends WFSRequest
      *
      * The groups with a null value for one of the $notNullFields are ignored.
      *
+     * All the values are decoded: for a large number of groups, prefer
+     * aggregateColumns() which returns them as JSON arrays.
+     *
      * @param list<string>                       $groupFields   the fields to group by
      * @param list<array{0: string, 1: ?string}> $aggregates    the aggregates: function and field
      * @param string                             $order         the order of the groups, ORDER_BY_GROUP or ORDER_BY_FIRST_FEATURE
@@ -158,6 +164,49 @@ class WFSAggregateRequest extends WFSRequest
      *                                                          null if the aggregation is not possible
      */
     public function aggregate(array $groupFields, array $aggregates, string $order = self::ORDER_BY_GROUP, array $notNullFields = array()): ?array
+    {
+        $columns = $this->aggregateColumns($groupFields, $aggregates, $order, $notNullFields);
+        if ($columns === null) {
+            return null;
+        }
+
+        // Decode the columns
+        $decode = fn (string $json) => json_decode($json, true, 512, JSON_THROW_ON_ERROR);
+        $groupColumns = array_map($decode, $columns['groups']);
+        $aggregateColumns = array_map($decode, $columns['aggregates']);
+
+        // Then build one row per group from the columns
+        $rows = array();
+        for ($i = 0; $i < $columns['count']; ++$i) {
+            $rows[] = array(
+                array_map(fn (array $column) => $column[$i], $groupColumns),
+                array_map(fn (array $column) => $column[$i], $aggregateColumns),
+            );
+        }
+
+        return $rows;
+    }
+
+    /**
+     * Aggregate the features by group, and get each column as a JSON array.
+     *
+     * The parameters are the same as aggregate(). The JSON arrays are built by
+     * PostgreSQL: the values can be sent to a client without being decoded,
+     * which keeps a low memory usage when there are many groups. The values of
+     * a group have the same position in all the arrays. JSON keeps the types
+     * of the values (number, string, boolean).
+     *
+     * @param list<string>                       $groupFields   the fields to group by
+     * @param list<array{0: string, 1: ?string}> $aggregates    the aggregates: function and field
+     * @param string                             $order         the order of the groups, ORDER_BY_GROUP or ORDER_BY_FIRST_FEATURE
+     * @param list<string>                       $notNullFields the group fields which must not be null
+     *
+     * @return null|array{count: int, groups: list<string>, aggregates: list<string>} the number of groups,
+     *                                                                                the JSON array of each group
+     *                                                                                field and of each aggregate;
+     *                                                                                null if not possible
+     */
+    public function aggregateColumns(array $groupFields, array $aggregates, string $order = self::ORDER_BY_GROUP, array $notNullFields = array()): ?array
     {
         $this->failureReason = null;
 
@@ -189,12 +238,18 @@ class WFSAggregateRequest extends WFSRequest
             return $this->fail('database error: '.$e->getMessage());
         }
 
-        // No group: json_agg returns null
-        if (!is_object($result) || $result->groups === null) {
-            return array();
+        // Get the JSON array of each column. Without group,
+        // json_agg returns null: the arrays are empty.
+        $count = is_object($result) ? (int) $result->lizmap_group_count : 0;
+        $columns = array('count' => $count, 'groups' => array(), 'aggregates' => array());
+        foreach (array_keys($groupFields) as $i) {
+            $columns['groups'][] = $count > 0 ? $result->{'g'.$i} : '[]';
+        }
+        foreach (array_keys($aggregates) as $i) {
+            $columns['aggregates'][] = $count > 0 ? $result->{'a'.$i} : '[]';
         }
 
-        return json_decode($result->groups, true, 512, JSON_THROW_ON_ERROR);
+        return $columns;
     }
 
     /**
@@ -312,10 +367,10 @@ class WFSAggregateRequest extends WFSRequest
     /**
      * Build the SQL query aggregating the features.
      *
-     * The query returns one row with one column "groups": a JSON array with,
-     * for each group, the array of the group values and the array of the
-     * aggregated values. JSON keeps the types of the values (number, string,
-     * boolean).
+     * The query returns one row: the number of groups "lizmap_group_count",
+     * then one JSON array per group field (g0, g1...) and per aggregate (a0,
+     * a1...), with the values of the groups in the same order. JSON keeps the
+     * types of the values (number, string, boolean).
      *
      * @param \jDbConnection                     $cnx           the database connection
      * @param string                             $whereClause   the WHERE clause selecting the features
@@ -373,7 +428,13 @@ class WFSAggregateRequest extends WFSRequest
             $groupOrder = implode(', ', $groupAliases);
         }
 
-        // Group the features, then build one JSON array of all the groups
+        // One JSON array per column, all in the same order of the groups
+        $jsonColumns = array('count(*) AS "lizmap_group_count"');
+        foreach (array_merge($groupAliases, $aggregateAliases) as $alias) {
+            $jsonColumns[] = 'json_agg('.$alias.' ORDER BY '.$groupOrder.')::text AS '.$alias;
+        }
+
+        // Group the features, then build the JSON arrays of the groups
         $positions = implode(', ', range(1, count($groupFields)));
 
         return '
@@ -388,13 +449,7 @@ class WFSAggregateRequest extends WFSRequest
                 FROM source
                 GROUP BY '.$positions.'
             )
-            SELECT json_agg(
-                json_build_array(
-                    json_build_array('.implode(', ', $groupAliases).'),
-                    json_build_array('.implode(', ', $aggregateAliases).')
-                )
-                ORDER BY '.$groupOrder.'
-            )::text AS groups
+            SELECT '.implode(', ', $jsonColumns).'
             FROM grouped
         ';
     }

@@ -1,11 +1,13 @@
 <?php
 
 use Lizmap\Project\Project;
+use LizmapDataviz\Json\JsonColumn;
 use LizmapDataviz\Plot\AbstractPlot;
 use LizmapDataviz\Plot\BoxPlot;
 use LizmapDataviz\Plot\PiePlot;
 use LizmapDataviz\Plot\PlotFactory;
 use LizmapDataviz\Plot\SunburstPlot;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -109,6 +111,21 @@ class PlotTest extends TestCase
     }
 
     /**
+     * Get the test features sorted by category, as requested by fetchData()
+     * for the plot types sorted by X: "1.5", "A", "A", "B", then no category.
+     *
+     * @return array the features
+     */
+    private static function getSortedFeatures(): array
+    {
+        $features = self::getFeatures();
+        $order = array('1.5' => 0, 'A' => 1, 'B' => 2);
+        usort($features, fn ($a, $b) => ($order[$a->properties->category] ?? 3) <=> ($order[$b->properties->category] ?? 3));
+
+        return $features;
+    }
+
+    /**
      * Create a plot and build its traces, checking that it succeeds.
      *
      * @param array         $plotConfig the plot configuration
@@ -145,16 +162,17 @@ class PlotTest extends TestCase
     public function testPieAlwaysAggregated(): void
     {
         foreach (array('sum', 'no', '') as $aggregation) {
-            $plot = $this->buildPlot(self::getPlotConfig('pie', $aggregation));
+            // Pie plots are sorted by X
+            $plot = $this->buildPlot(self::getPlotConfig('pie', $aggregation), self::getSortedFeatures());
             $this->assertTrue($plot->isAggregated());
             $trace = $plot->getData()[0];
 
             // One slice per category, the feature without category is ignored
-            $this->assertSame(array('A', 'B', '1.5'), $trace['labels']);
-            $this->assertSame(array(4, 2, 4), $trace['values']);
+            $this->assertSame(array('1.5', 'A', 'B'), $trace['labels']);
+            $this->assertSame(array(4, 4, 2), $trace['values']);
 
             // Pie colors are in marker.colors: the first color of each category
-            $this->assertSame(array('red', null, null), $trace['marker']['colors']);
+            $this->assertSame(array(null, 'red', null), $trace['marker']['colors']);
             $this->assertArrayNotHasKey('color', $trace['marker']);
         }
     }
@@ -165,8 +183,85 @@ class PlotTest extends TestCase
     public function testPieMedian(): void
     {
         // Median of A (1, 3) is 2, B and 1.5 have a single value
-        $plot = $this->buildPlot(self::getPlotConfig('pie', 'median'));
-        $this->assertSame(array(2, 2, 4), $plot->getData()[0]['values']);
+        $plot = $this->buildPlot(self::getPlotConfig('pie', 'median'), self::getSortedFeatures());
+        $this->assertSame(array(4, 2, 2), $plot->getData()[0]['values']);
+    }
+
+    /**
+     * Get the aggregate functions to compare the aggregation of sorted features
+     * group by group with the aggregation of all the groups at once.
+     *
+     * @return array<array{0: string}> the aggregate functions
+     */
+    public static function aggregationProvider(): array
+    {
+        return array_map(
+            fn ($function) => array($function),
+            array('sum', 'count', 'avg', 'min', 'max', 'stddev', 'median', 'first', 'last'),
+        );
+    }
+
+    /**
+     * Test that the features sorted by X are aggregated group by group,
+     * with the same result as the aggregation of all the groups at once.
+     *
+     * The scatter plot is sorted by X and the bar plot is not: they use
+     * the two aggregations, with the same trace properties.
+     *
+     * @param string $function the aggregate function
+     */
+    #[DataProvider('aggregationProvider')]
+    public function testSortedAggregation(string $function): void
+    {
+        $scatter = $this->buildPlot(self::getPlotConfig('scatter', $function), self::getSortedFeatures());
+        $bar = $this->buildPlot(self::getPlotConfig('bar', $function), self::getSortedFeatures());
+
+        // The values of the scatter plot are written in columns
+        $this->assertInstanceOf(JsonColumn::class, $scatter->getTraces()[0]['x']);
+        $this->assertInstanceOf(JsonColumn::class, $scatter->getTraces()[0]['y']);
+
+        // Same groups, values and colors
+        $scatterTrace = $scatter->getData()[0];
+        $barTrace = $bar->getData()[0];
+        $this->assertSame(array('1.5', 'A', 'B'), $scatterTrace['x']);
+        $this->assertSame($barTrace['x'], $scatterTrace['x']);
+        $this->assertSame($barTrace['y'], $scatterTrace['y']);
+
+        // The trace color is used for the groups without color
+        $this->assertSame(array('green', 'red', 'green'), $scatterTrace['marker']['color']);
+        $this->assertSame($barTrace['marker']['color'], $scatterTrace['marker']['color']);
+    }
+
+    /**
+     * Test the aggregation group by group with many groups, written in
+     * temporary files, and consecutive features in the same group.
+     */
+    public function testSortedAggregationManyGroups(): void
+    {
+        // 100000 groups with two features each, the second one without color.
+        // The JSON of the groups (about 900 KB) is written in a temporary file.
+        $features = (function () {
+            for ($i = 0; $i < 200000; ++$i) {
+                yield (object) array(
+                    'type' => 'Feature',
+                    'properties' => (object) array(
+                        'category' => sprintf('%06d', intdiv($i, 2)),
+                        'value' => $i,
+                        'color' => $i % 2 ? null : 'red',
+                        'parent' => null,
+                    ),
+                );
+            }
+        })();
+        $plot = $this->buildPlot(self::getPlotConfig('scatter', 'sum'), $features);
+        $trace = $plot->getData()[0];
+
+        // The sum of each group: 2i + (2i + 1)
+        $this->assertCount(100000, $trace['x']);
+        $this->assertSame('099999', $trace['x'][99999]);
+        $this->assertSame(1, $trace['y'][0]);
+        $this->assertSame(399997, $trace['y'][99999]);
+        $this->assertSame(array('red'), array_values(array_unique($trace['marker']['color'])));
     }
 
     /**

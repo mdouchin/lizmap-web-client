@@ -12,6 +12,9 @@ class WFSAggregateRequestForTests extends WFSAggregateRequest
 
     public $appContext;
 
+    /** @var null|array The result of aggregateColumns(), without database */
+    public $columnsForTests;
+
     /**
      * Create the request without project: set the needed properties directly.
      */
@@ -47,6 +50,21 @@ class WFSAggregateRequestForTests extends WFSAggregateRequest
     public function buildAggregateSqlForTests($cnx, string $whereClause, array $groupFields, array $aggregates, string $order, array $notNullFields = array()): string
     {
         return $this->buildAggregateSql($cnx, $whereClause, $groupFields, $aggregates, $order, $notNullFields);
+    }
+
+    /**
+     * Get the JSON arrays of the aggregation, without database.
+     *
+     * @param array  $groupFields   the fields to group by
+     * @param array  $aggregates    the aggregates: function and field
+     * @param string $order         the order of the groups
+     * @param array  $notNullFields the group fields which must not be null
+     *
+     * @return null|array the columns given in $columnsForTests
+     */
+    public function aggregateColumns(array $groupFields, array $aggregates, string $order = self::ORDER_BY_GROUP, array $notNullFields = array()): ?array
+    {
+        return $this->columnsForTests;
     }
 
     /**

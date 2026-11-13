@@ -223,10 +223,13 @@ class WFSAggregateRequestTest extends TestCase
         );
         $this->assertStringContainsString('min("lizmap_feature_order") AS "lizmap_group_order" FROM source GROUP BY 1, 2 )', $sql);
 
-        // One JSON array of the groups, in the order of their first feature
+        // The number of groups, and one JSON array per column, in the order of their first feature
         $this->assertStringContainsString(
-            'SELECT json_agg( json_build_array( json_build_array("g0", "g1"), json_build_array("a0", "a1") )'
-            .' ORDER BY "lizmap_group_order" )::text AS groups FROM grouped',
+            'SELECT count(*) AS "lizmap_group_count",'
+            .' json_agg("g0" ORDER BY "lizmap_group_order")::text AS "g0",'
+            .' json_agg("g1" ORDER BY "lizmap_group_order")::text AS "g1",'
+            .' json_agg("a0" ORDER BY "lizmap_group_order")::text AS "a0",'
+            .' json_agg("a1" ORDER BY "lizmap_group_order")::text AS "a1" FROM grouped',
             $sql
         );
     }
@@ -245,9 +248,39 @@ class WFSAggregateRequestTest extends TestCase
         );
         $sql = preg_replace('/\s+/', ' ', trim($sql));
 
-        $this->assertStringContainsString('ORDER BY "g0" )::text AS groups', $sql);
+        $this->assertStringContainsString('json_agg("a0" ORDER BY "g0")::text AS "a0"', $sql);
 
         // Without not null field, no condition is added
         $this->assertStringContainsString('FROM "schema"."table" WHERE True )', $sql);
+    }
+
+    /**
+     * Test that aggregate() builds one row per group from the JSON columns.
+     */
+    public function testAggregateRows(): void
+    {
+        $request = self::getRequest();
+        $request->columnsForTests = array(
+            'count' => 2,
+            'groups' => array('["P1", null]', '["A", "B"]'),
+            'aggregates' => array('[1.5, 2]', '["red", null]'),
+        );
+
+        // The group values and the aggregated values of each group
+        $this->assertSame(
+            array(
+                array(array('P1', 'A'), array(1.5, 'red')),
+                array(array(null, 'B'), array(2, null)),
+            ),
+            $request->aggregate(array('parent', 'category'), array(array('sum', 'value'), array('first_not_empty', 'color')))
+        );
+
+        // No group: no row
+        $request->columnsForTests = array('count' => 0, 'groups' => array('[]'), 'aggregates' => array('[]'));
+        $this->assertSame(array(), $request->aggregate(array('category'), array(array('count', null))));
+
+        // Aggregation not possible
+        $request->columnsForTests = null;
+        $this->assertNull($request->aggregate(array('category'), array(array('count', null))));
     }
 }

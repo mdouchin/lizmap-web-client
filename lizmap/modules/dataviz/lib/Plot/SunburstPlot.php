@@ -14,6 +14,7 @@
 namespace LizmapDataviz\Plot;
 
 use LizmapDataviz\Aggregation\GroupIndex;
+use LizmapDataviz\Json\JsonColumn;
 
 /**
  * The X field gives the labels, the Z field of the first trace gives
@@ -27,6 +28,9 @@ class SunburstPlot extends AbstractPlot
     public const ROOT = 'Total';
 
     protected const AGGREGATION_MODE = self::AGGREGATION_ALWAYS;
+
+    /** The groups are processed to build the hierarchy: they are given as arrays */
+    protected const AGGREGATED_COLUMNS = false;
 
     protected const FEATURE_COLORS = self::FEATURE_COLORS_MARKER_COLORS;
 
@@ -142,16 +146,23 @@ class SunburstPlot extends AbstractPlot
      *
      * As a label can be used by several parents, each node has a unique id.
      *
-     * @param array       $trace  the sunburst trace
-     * @param list<array> $groups the groups: [parent, label]
-     * @param list<mixed> $values the aggregated value of each group
-     * @param null|array  $colors the color of each group, null if none
+     * The values are given as arrays, as AGGREGATED_COLUMNS is false.
+     *
+     * @param array                  $trace  the sunburst trace
+     * @param JsonColumn|list<array> $groups the groups: [parent, label]
+     * @param JsonColumn|list<mixed> $values the aggregated value of each group
+     * @param null|array|JsonColumn  $colors the color of each group, null if none
      *
      * @return null|array the colors of all the nodes, null if none
      */
-    protected function setAggregatedValues(array &$trace, array $groups, array $values, ?array $colors): ?array
+    protected function setAggregatedValues(array &$trace, array|JsonColumn $groups, array|JsonColumn $values, null|array|JsonColumn $colors): ?array
     {
         $root = self::ROOT;
+
+        // Decode the columns, if any, to process the values
+        $groups = $groups instanceof JsonColumn ? $groups->jsonSerialize() : $groups;
+        $values = $values instanceof JsonColumn ? $values->jsonSerialize() : $values;
+        $colors = $colors instanceof JsonColumn ? $colors->jsonSerialize() : $colors;
 
         // Build the parent nodes from the groups. A parent has the sum
         // of the values of its children, and the color of its first child.

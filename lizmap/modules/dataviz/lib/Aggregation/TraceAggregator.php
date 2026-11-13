@@ -18,7 +18,8 @@ namespace LizmapDataviz\Aggregation;
  *
  * Only the state required by the configured function is kept, so the memory
  * used is proportional to the number of groups, except for the median which
- * needs to keep every numeric value.
+ * needs to keep every numeric value. When the features are sorted by group,
+ * reset() allows to keep only the state of the current group.
  *
  * Except for count, first and last, non numeric values are ignored.
  */
@@ -186,6 +187,23 @@ final class TraceAggregator
     }
 
     /**
+     * Forget the state of all the groups.
+     *
+     * Used when the features are sorted by group: once the value of a group
+     * is read, its state is no longer needed and the next group starts again
+     * at position 0, so the memory does not depend on the number of groups.
+     */
+    public function reset(): void
+    {
+        $this->values = array();
+        $this->counts = array();
+        $this->means = array();
+        $this->m2 = array();
+        $this->samples = array();
+        $this->colors = array();
+    }
+
+    /**
      * Get the aggregated value of each group.
      *
      * @param int $groupCount the total number of groups
@@ -230,6 +248,18 @@ final class TraceAggregator
     }
 
     /**
+     * Get the first non empty color of a group.
+     *
+     * @param int $group the group position
+     *
+     * @return mixed the color, null if the group has no color
+     */
+    public function color(int $group): mixed
+    {
+        return $this->colors[$group] ?? null;
+    }
+
+    /**
      * Get the aggregated value of a group.
      *
      * @param int $group the group position
@@ -237,7 +267,7 @@ final class TraceAggregator
      * @return mixed the aggregated value: 0 for an empty count or sum,
      *               null for the other functions if the group has no value
      */
-    private function result(int $group): mixed
+    public function result(int $group): mixed
     {
         switch ($this->function) {
             case AggregateFunction::COUNT:

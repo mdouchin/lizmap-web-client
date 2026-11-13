@@ -31,6 +31,32 @@ final class GroupIndex
     private array $values = array();
 
     /**
+     * Get the key identifying a group value.
+     *
+     * Two values get the same key only if they are the same group: same
+     * type and same value. It is used as PHP array key by the index, and to
+     * compare the groups of consecutive features when they are sorted.
+     *
+     * @param mixed $value the group value: a scalar, or an array for groups
+     *                     made of several values
+     *
+     * @return string the key of the value
+     */
+    public static function keyOf(mixed $value): string
+    {
+        // Build a key keeping the value type: the prefix avoids
+        // the cast of numeric strings to int by PHP array keys
+        if (is_string($value)) {
+            return 's'.$value;
+        }
+        if (is_int($value)) {
+            return 'i'.$value;
+        }
+
+        return 'o'.json_encode($value);
+    }
+
+    /**
      * Get the position of the given value, adding it if not yet known.
      *
      * @param mixed $value the group value: a scalar, or an array for groups
@@ -40,15 +66,7 @@ final class GroupIndex
      */
     public function positionOf(mixed $value): int
     {
-        // Build a key keeping the value type: the prefix avoids
-        // the cast of numeric strings to int by PHP array keys
-        if (is_string($value)) {
-            $key = 's'.$value;
-        } elseif (is_int($value)) {
-            $key = 'i'.$value;
-        } else {
-            $key = 'o'.json_encode($value);
-        }
+        $key = self::keyOf($value);
 
         // Add the value if it is not yet known
         $position = $this->positions[$key] ?? null;

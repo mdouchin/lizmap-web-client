@@ -22,7 +22,8 @@ namespace LizmapDataviz\Json;
  * not depend on the number of values.
  *
  * The column can be written several times to an output stream with writeTo(),
- * or decoded with jsonSerialize().
+ * or decoded with jsonSerialize(). It can also be created from a JSON array
+ * already encoded, with fromJson().
  */
 class JsonColumn implements \Countable, \JsonSerializable
 {
@@ -49,6 +50,43 @@ class JsonColumn implements \Countable, \JsonSerializable
         if ($this->stream !== null) {
             fclose($this->stream);
         }
+    }
+
+    /**
+     * Create a column from a JSON array already encoded, for example by PostgreSQL.
+     *
+     * The values are copied in the temporary stream without being decoded,
+     * so a large array does not use more memory than its JSON string.
+     *
+     * @param string $json  the JSON array
+     * @param int    $count the number of values of the array
+     *
+     * @return self the column
+     *
+     * @throws \InvalidArgumentException if the JSON is not an array
+     */
+    public static function fromJson(string $json, int $count): self
+    {
+        // Only the content of the array is stored, without the brackets
+        $json = trim($json);
+        if (!str_starts_with($json, '[') || !str_ends_with($json, ']')) {
+            throw new \InvalidArgumentException('The JSON must be an array');
+        }
+
+        $column = new self();
+        $column->count = $count;
+        if ($count === 0) {
+            return $column;
+        }
+
+        // Copy the content by blocks, without copying the whole string
+        $column->stream = fopen('php://temp/maxmemory:'.self::MAX_MEMORY, 'w+');
+        $end = strlen($json) - 1;
+        for ($offset = 1; $offset < $end; $offset += self::BUFFER_SIZE) {
+            fwrite($column->stream, substr($json, $offset, min(self::BUFFER_SIZE, $end - $offset)));
+        }
+
+        return $column;
     }
 
     /**
