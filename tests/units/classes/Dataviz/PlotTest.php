@@ -120,7 +120,7 @@ class PlotTest extends TestCase
     {
         $features = self::getFeatures();
         $order = array('1.5' => 0, 'A' => 1, 'B' => 2);
-        usort($features, fn ($a, $b) => ($order[$a->properties->category] ?? 3) <=> ($order[$b->properties->category] ?? 3));
+        usort($features, fn ($a, $b): int => ($order[$a->properties->category] ?? 3) <=> ($order[$b->properties->category] ?? 3));
 
         return $features;
     }
@@ -196,7 +196,7 @@ class PlotTest extends TestCase
     public static function aggregationProvider(): array
     {
         return array_map(
-            fn ($function) => array($function),
+            fn ($function): array => array($function),
             array('sum', 'count', 'avg', 'min', 'max', 'stddev', 'median', 'first', 'last'),
         );
     }

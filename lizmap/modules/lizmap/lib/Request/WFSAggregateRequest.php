@@ -171,7 +171,7 @@ class WFSAggregateRequest extends WFSRequest
         }
 
         // Decode the columns
-        $decode = fn (string $json) => json_decode($json, true, 512, JSON_THROW_ON_ERROR);
+        $decode = fn (string $json): mixed => json_decode($json, true, 512, JSON_THROW_ON_ERROR);
         $groupColumns = array_map($decode, $columns['groups']);
         $aggregateColumns = array_map($decode, $columns['aggregates']);
 
